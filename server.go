@@ -52,7 +52,7 @@ func NewServerWithConfig(cfg *Config) (*Server, error) {
 
 	s.httpServer.Handler = s.mux
 
-	logger, err := zap.NewDevelopment()
+	logger, err := zap.NewProduction()
 	if err != nil {
 		return nil, err
 	}
