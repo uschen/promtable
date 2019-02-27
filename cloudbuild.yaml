@@ -7,4 +7,16 @@ steps:
     apk add make bash git; \
     ls -al; \
     make ci-test
-    make build
+    make ci-build
+- name: 'gcr.io/cloud-builders/docker'
+  args: 
+  - 'build'
+  - '-t'
+  - 'gcr.io/bigreat/promtable:${_DOCKER_TAG_}'
+  - '.'
+
+substitutions:
+  _DOCKER_TAG_: $BRANCH_NAME
+
+images:
+- 'gcr.io/bigreat/promtable:${_DOCKER_TAG_}'
