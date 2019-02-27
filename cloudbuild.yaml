@@ -4,7 +4,7 @@ steps:
   args:
   - '-c'
   - |
-    apk add make bash; \
+    apk add make bash git; \
     go get -u github.com/kisielk/errcheck; \
     go get -u golang.org/x/lint/golint; \
     make ci-test; \
