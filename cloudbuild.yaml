@@ -5,9 +5,5 @@ steps:
   - '-c'
   - |
     apk add make bash git; \
-    go get -u github.com/kisielk/errcheck; \
-    go get -u golang.org/x/lint/golint; \
-    go get -u github.com/golang/dep/cmd/dep; \
-    dep ensure; \
     ls -al; \
-#    make ci-test
+    make ci-test
