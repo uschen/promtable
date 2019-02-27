@@ -1,0 +1,7 @@
+steps:
+- name: 'golang:1.12-alpine'
+  entrypoint: sh
+  args:
+  - '-c'
+  - |
+    apk add make bash; make ci-test
