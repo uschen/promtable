@@ -7,4 +7,6 @@ steps:
     apk add make bash git; \
     go get -u github.com/kisielk/errcheck; \
     go get -u golang.org/x/lint/golint; \
-    make ci-test; \
+    go get -u github.com/golang/dep/cmd/dep; \
+    dep ensure; \
+    make ci-test
