@@ -20,7 +20,7 @@ ${BUILD_DIR}/_build:
 	touch $@
 
 ci-build: ci-clean-build $(BUILD_DIR)/_build ci-env
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a --installsuffix cgo --ldflags $(LD_FLAGS) -o ${BUILD_DIR}/nuorder ${BUILD_DIR}/_build/src/${PKG}/main.go
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a --ldflags $(LD_FLAGS) -o ${BUILD_DIR}/nuorder ${BUILD_DIR}/_build/src/${PKG}/main.go
 	chmod +x ${BUILD_DIR}/nuorder
 
 .PHONY:	ci-cloud-pre
@@ -33,7 +33,7 @@ ci-test: ci-clean-build $(BUILD_DIR)/_build ci-env ci-cloud-pre
 	go fmt $$(go list ${PKG}/... | grep -v vendor/) | awk '{ print } END { if (NR > 0) { print "Please run go fmt"; exit 1 } }'
 	golint $$(go list ${PKG}/... | grep -v vendor/)
 	errcheck $$(go list ${PKG}/... | grep -v vendor/) | grep -v "defer " | grep -v "fmt.Fprint" | awk '{ print } END { if (NR > 0) { print "Please run errcheck"; exit 1 } }'
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test --installsuffix cgo --ldflags $(LD_FLAGS) -v $$(go list ${PKG}/... | grep -v vendor/)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test --ldflags $(LD_FLAGS) -v $$(go list ${PKG}/... | grep -v vendor/)
 	@echo SUCCESS
 
 .PHONY:	ci-clean-build
