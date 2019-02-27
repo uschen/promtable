@@ -6,7 +6,7 @@ steps:
   - |
     apk add make bash git; \
     ls -al; \
-    make ci-test
+    make ci-test; \
     make ci-build
 - name: 'gcr.io/cloud-builders/docker'
   args: 
