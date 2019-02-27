@@ -12,6 +12,7 @@ LD_FLAGS="-extldflags -static -s -w -X $(REPO_PATH)/version.Version=$(VERSION)"
 
 ci-env:
 	$(eval GOPATH=${BUILD_GOPATH})
+	$(eval PATH=${PATH}:${GOPATH}/bin)
 
 ${BUILD_DIR}/_build:
 	mkdir -p $@/src/${PKG}
