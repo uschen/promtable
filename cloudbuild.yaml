@@ -1,9 +1,13 @@
 steps:
 - name: 'golang:1.12-alpine'
   entrypoint: sh
+  volumes:
+  - name: 'vol1'
+    path: '/persistent_volume'
   args:
   - '-c'
   - |
     apk add make bash git; \
     ls -al; \
     make ci-test
+    cp ./promtable /persistent_volume/prometable

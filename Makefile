@@ -20,8 +20,8 @@ ${BUILD_DIR}/_build:
 	touch $@
 
 ci-build: ci-clean-build $(BUILD_DIR)/_build ci-env
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a --ldflags $(LD_FLAGS) -o ${BUILD_DIR}/nuorder ${BUILD_DIR}/_build/src/${PKG}/main.go
-	chmod +x ${BUILD_DIR}/nuorder
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a --ldflags $(LD_FLAGS) -o ${BUILD_DIR}/promtable ${BUILD_DIR}/_build/src/${PKG}/cmd/promtable/main.go
+	chmod +x ${BUILD_DIR}/promtable
 
 .PHONY:	ci-cloud-pre
 ci-cloud-pre:
