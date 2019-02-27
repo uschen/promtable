@@ -30,7 +30,7 @@ ci-cloud-pre:
 	dep ensure
 
 .PHONY: ci-test
-ci-test: ci-clean-build ci-cloud-pre $(BUILD_DIR)/_build ci-env
+ci-test: ci-clean-build $(BUILD_DIR)/_build ci-env ci-cloud-pre
 	go fmt $$(go list ${PKG}/... | grep -v vendor/) | awk '{ print } END { if (NR > 0) { print "Please run go fmt"; exit 1 } }'
 	golint $$(go list ${PKG}/... | grep -v vendor/)
 	errcheck $$(go list ${PKG}/... | grep -v vendor/) | grep -v "defer " | grep -v "fmt.Fprint" | awk '{ print } END { if (NR > 0) { print "Please run errcheck"; exit 1 } }'
