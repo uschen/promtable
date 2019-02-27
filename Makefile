@@ -27,7 +27,7 @@ ci-cloud-pre:
 	go get -u github.com/kisielk/errcheck
 	go get -u golang.org/x/lint/golint
 	go get -u github.com/golang/dep/cmd/dep
-	dep ensure
+	$(GOPATH)/bin/dep ensure
 
 .PHONY: ci-test
 ci-test: ci-clean-build $(BUILD_DIR)/_build ci-env ci-cloud-pre
