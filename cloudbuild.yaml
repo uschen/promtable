@@ -12,11 +12,8 @@ steps:
   args: 
   - 'build'
   - '-t'
-  - 'gcr.io/bigreat/promtable:${_DOCKER_TAG_}'
+  - 'gcr.io/bigreat/promtable:${BRANCH_NAME}'
   - '.'
 
-substitutions:
-  _DOCKER_TAG_: $BRANCH_NAME
-
 images:
-- 'gcr.io/bigreat/promtable:${_DOCKER_TAG_}'
+- 'gcr.io/bigreat/promtable:${BRANCH_NAME}'
