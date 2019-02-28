@@ -15,7 +15,6 @@ import (
 	"go.uber.org/zap"
 
 	"cloud.google.com/go/bigtable"
-	"github.com/gogo/protobuf/proto"
 	"github.com/golang/snappy"
 	"github.com/uschen/promtable/prompb"
 	"google.golang.org/api/option"
@@ -133,7 +132,7 @@ func (s *Server) HandleWrite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req = new(prompb.WriteRequest)
-	if err := proto.Unmarshal(reqBuf, req); err != nil {
+	if err := req.Unmarshal(reqBuf); err != nil {
 		s.Logger.Error("Unmarshal error", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -163,7 +162,7 @@ func (s *Server) HandleRead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req = new(prompb.ReadRequest)
-	if err := proto.Unmarshal(reqBuf, req); err != nil {
+	if err := req.Unmarshal(reqBuf); err != nil {
 		s.Logger.Error("Unmarshal error", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -175,7 +174,7 @@ func (s *Server) HandleRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := proto.Marshal(res)
+	data, err := res.Marshal()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
