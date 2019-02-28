@@ -97,8 +97,13 @@ func NewServerWithConfig(cfg *Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	s.store = store
+
+	if cfg.EnsureTables {
+		if err := s.store.EnsureTables(context.Background()); err != nil {
+			return nil, err
+		}
+	}
 
 	s.mux.Handle("/write", http.HandlerFunc(s.HandleWrite))
 	s.mux.Handle("/read", http.HandlerFunc(s.HandleRead))
@@ -116,20 +121,20 @@ func NewServerWithConfig(cfg *Config) (*Server, error) {
 func (s *Server) HandleWrite(w http.ResponseWriter, r *http.Request) {
 	compressed, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		// log.Error("msg", "Read error", "err", err.Error())
+		s.Logger.Error("Read error", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	reqBuf, err := snappy.Decode(nil, compressed)
 	if err != nil {
-		// log.Error("msg", "Decode error", "err", err.Error())
+		s.Logger.Error("Decode error", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	var req = new(prompb.WriteRequest)
 	if err := proto.Unmarshal(reqBuf, req); err != nil {
-		// log.Error("msg", "Unmarshal error", "err", err.Error())
+		s.Logger.Error("Unmarshal error", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -145,25 +150,25 @@ func (s *Server) HandleWrite(w http.ResponseWriter, r *http.Request) {
 func (s *Server) HandleRead(w http.ResponseWriter, r *http.Request) {
 	compressed, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		// log.Error("msg", "Read error", "err", err.Error())
+		s.Logger.Error("Read error", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	reqBuf, err := snappy.Decode(nil, compressed)
 	if err != nil {
-		// log.Error("msg", "Decode error", "err", err.Error())
+		s.Logger.Error("Decode error", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	var req = new(prompb.ReadRequest)
 	if err := proto.Unmarshal(reqBuf, req); err != nil {
-		// log.Error("msg", "Unmarshal error", "err", err.Error())
+		s.Logger.Error("Unmarshal error", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
+	s.Logger.Info("Read", zap.String("req.string", req.String()))
 	res, err := s.store.Read(r.Context(), defaultNamespace, req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

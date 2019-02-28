@@ -2,7 +2,9 @@ package promtable_test
 
 import (
 	"bytes"
+	"fmt"
 	"log"
+	"math"
 	"sort"
 	"testing"
 
@@ -204,6 +206,36 @@ func TestRowsFromTimeseries(t *testing.T) {
 		testutil.Equals(t, len(actual), len(cas.output))
 		for i, r := range actual {
 			testutil.Equals(t, cas.output[i].Values, r.Values)
+		}
+	}
+}
+
+func TestFloat64ToBytes(t *testing.T) {
+	tests := []struct {
+		input []float64
+	}{
+		{
+			input: []float64{
+				1.23123123123,
+				2.12312312,
+				2312312.123,
+				-12312312.121,
+				0.123123123,
+				12312.11,
+				12312312.123123123,
+				math.Pi,
+				math.MaxFloat64,
+				math.SmallestNonzeroFloat64,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		for i := range test.input {
+			b := promtable.Float64ToBytes(test.input[i])
+			act := promtable.Float64FromBytes(b)
+			fmt.Printf("\ni: %d\ninput: %f\n", i, test.input[i])
+			testutil.Equals(t, test.input[i], act)
 		}
 	}
 }
