@@ -151,8 +151,13 @@ func (s *Store) Read(ctx context.Context, namespace string, req *prompb.ReadRequ
 	}
 
 	wg.Wait()
+	for i := range qrs {
+		if qrs[i] == nil {
+			continue
+		}
+		res.Results = append(res.Results, qrs[i])
+	}
 
-	res.Results = qrs
 	return res, nil
 }
 
