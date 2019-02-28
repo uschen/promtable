@@ -212,5 +212,5 @@ func ParseRowKey(rk string) (name string, metricID MetricIdentifier, labels Labe
 		labels[i] = prompb.Label{Name: lparts[0], Value: UnescapeLabelValue(lparts[1])}
 	}
 	sort.Sort(labels)
-	return name, "", labels, true
+	return name, metricID, labels, true
 }

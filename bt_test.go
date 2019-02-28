@@ -121,6 +121,56 @@ func TestStore_Query(t *testing.T) {
 	testutil.Equals(t, ts.Samples[5], res[0].Samples[3])
 }
 
+func TestStore_Query2(t *testing.T) {
+	const baseHour = 430922
+	s := newBTTestingServer(t)
+	defer s.Close()
+
+	tss := complexSerices(baseHour)
+	var rrs []*promtable.TimeseriesRow
+	for i := range tss {
+		rs, err := promtable.RowsFromTimeseries(s.ns, tss[i])
+		if err != nil {
+			t.Error(err)
+			t.FailNow()
+			return
+		}
+
+		rrs = append(rrs, rs...)
+	}
+
+	if err := s.store.WriteRows(s.ctx, rrs); err != nil {
+		t.Error(err)
+		t.FailNow()
+		return
+	}
+
+	q := &prompb.Query{
+		StartTimestampMs: (baseHour+1)*60*60*1000 + 2,
+		EndTimestampMs:   (baseHour+3)*60*60*1000 + 5,
+		Matchers: []*prompb.LabelMatcher{
+			{
+				Type:  prompb.LabelMatcher_EQ,
+				Name:  promtable.MetricNameLabel,
+				Value: "ma",
+			},
+			{
+				Type:  prompb.LabelMatcher_EQ,
+				Name:  "l4",
+				Value: "v4,#4",
+			},
+		},
+	}
+
+	res, err := s.store.Query(s.ctx, s.ns, q)
+	if err != nil {
+		t.Error(err)
+		t.Fail()
+	}
+	testutil.Equals(t, 2, len(res))
+	testutil.Equals(t, 4, len(res[0].Samples))
+}
+
 func TestStore_Read(t *testing.T) {
 	s := newBTTestingServer(t)
 	defer s.Close()
@@ -280,4 +330,46 @@ func newTimeseries(baseHour int64) prompb.TimeSeries {
 		},
 	}
 	return ts
+}
+
+func complexSerices(baseHour int64) []prompb.TimeSeries {
+	tss := []prompb.TimeSeries{
+		{
+			Labels: []prompb.Label{
+				{Name: promtable.MetricNameLabel, Value: "ma"},
+				{Name: "l1", Value: "v1"},
+				{Name: "l2", Value: "v2"},
+				{Name: "kubernetes_pod_name", Value: "nu-fe-grpc-gateway-deployment-757d8c8464-5bbzk"},
+				{Name: "l3", Value: "v3"},
+				{Name: "l4", Value: "v4,#4"},
+			},
+			Samples: []prompb.Sample{
+				{Value: 0.1, Timestamp: (baseHour+1)*60*60*1000 + 1},
+				{Value: 0.2, Timestamp: (baseHour+1)*60*60*1000 + 2},
+				{Value: 0.3, Timestamp: (baseHour+2)*60*60*1000 + 3},
+				{Value: 0.4, Timestamp: (baseHour+2)*60*60*1000 + 4},
+				{Value: 0.5, Timestamp: (baseHour+3)*60*60*1000 + 5},
+				{Value: 0.6, Timestamp: (baseHour+3)*60*60*1000 + 5},
+			},
+		},
+		{
+			Labels: []prompb.Label{
+				{Name: promtable.MetricNameLabel, Value: "ma"},
+				{Name: "l1", Value: "v1"},
+				{Name: "l2", Value: "v2"},
+				{Name: "kubernetes_pod_name", Value: "nu-fe-grpc-gateway-deployment-757d8c8464-nc69q"},
+				{Name: "l3", Value: "v3"},
+				{Name: "l4", Value: "v4,#4"},
+			},
+			Samples: []prompb.Sample{
+				{Value: 1.1, Timestamp: (baseHour+1)*60*60*1000 + 1},
+				{Value: 1.2, Timestamp: (baseHour+1)*60*60*1000 + 2},
+				{Value: 1.3, Timestamp: (baseHour+2)*60*60*1000 + 3},
+				{Value: 1.4, Timestamp: (baseHour+2)*60*60*1000 + 4},
+				{Value: 1.5, Timestamp: (baseHour+3)*60*60*1000 + 5},
+				{Value: 1.6, Timestamp: (baseHour+3)*60*60*1000 + 5},
+			},
+		},
+	}
+	return tss
 }
