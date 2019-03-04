@@ -31,6 +31,7 @@ func queryMatcherToLabelMatcher(m *prompb.LabelMatcher) (*labelMatcher, error) {
 	)
 	lm := &labelMatcher{
 		Name: m.Name,
+		Type: m.Type,
 	}
 
 	switch m.Type {
@@ -69,6 +70,7 @@ type valueMatchFunc func(value string) bool
 // labelMatcher -
 type labelMatcher struct {
 	Name      string
+	Type      prompb.LabelMatcher_Type
 	matchFunc valueMatchFunc
 }
 
@@ -87,7 +89,13 @@ func (m LabelsMatcher) Match(labels []prompb.Label) (ok bool) {
 	}
 	if len(labels) == 0 {
 		// has matcher but no labels
-		return false
+		// if all Not Type Matcher, we can return true
+		for i := range m {
+			if m[i].Type != prompb.LabelMatcher_NEQ && m[i].Type != prompb.LabelMatcher_NRE {
+				return false
+			}
+		}
+		return true
 	}
 	// every sinlge one of matchers has to be satisfied
 	// matchers: e e g h

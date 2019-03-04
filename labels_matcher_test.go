@@ -62,6 +62,24 @@ func TestQueryMatchersToLabelsMatcher(t *testing.T) {
 		{
 			input: []*prompb.LabelMatcher{
 				{
+					Type:  prompb.LabelMatcher_NEQ,
+					Name:  "l2",
+					Value: "pods",
+				},
+			},
+			matches: [][]prompb.Label{
+				[]prompb.Label{{Name: "l1", Value: "v1,v1.2"}, {Name: "l2", Value: "v2"}},
+				[]prompb.Label{{Name: "l1", Value: "v1"}, {Name: "l2", Value: "v2"}},
+				[]prompb.Label{},
+			},
+			notmatches: [][]prompb.Label{
+				[]prompb.Label{{Name: "l1", Value: "v1,v1.2"}, {Name: "l2", Value: "pods"}},
+				[]prompb.Label{{Name: "l1", Value: "v1,v1.2"}, {Name: "l2", Value: "pods"}, {Name: "l3", Value: "v3"}}, // more values
+			},
+		},
+		{
+			input: []*prompb.LabelMatcher{
+				{
 					Type:  prompb.LabelMatcher_RE,
 					Name:  "l2",
 					Value: "v2",
@@ -75,6 +93,24 @@ func TestQueryMatchersToLabelsMatcher(t *testing.T) {
 				[]prompb.Label{{Name: "l1", Value: "v1,v1.2"}, {Name: "l2", Value: "v3"}}, // one wrong value
 				[]prompb.Label{{Name: "l1", Value: "v1"}, {Name: "l2", Value: "v4"}},      // two wrong values
 				[]prompb.Label{},
+			},
+		},
+		{
+			input: []*prompb.LabelMatcher{
+				{
+					Type:  prompb.LabelMatcher_NRE,
+					Name:  "l2",
+					Value: "v2",
+				},
+			},
+			matches: [][]prompb.Label{
+				[]prompb.Label{{Name: "l1", Value: "v1,v1.2"}, {Name: "l2", Value: "v3"}},
+				[]prompb.Label{{Name: "l1", Value: "v1,v1.2"}, {Name: "l2", Value: "v3"}, {Name: "l3", Value: "v3"}}, // more values
+				[]prompb.Label{},
+			},
+			notmatches: [][]prompb.Label{
+				[]prompb.Label{{Name: "l1", Value: "v1,v1.2"}, {Name: "l2", Value: "v2"}}, // one wrong value
+				[]prompb.Label{{Name: "l1", Value: "v1"}, {Name: "l2", Value: "v2"}},      // two wrong values
 			},
 		},
 	}
