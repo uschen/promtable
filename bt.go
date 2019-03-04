@@ -138,11 +138,17 @@ func (s *Store) EnsureTables(ctx context.Context) error {
 	if err := s.createColumnFamilyIfNotExist(ctx, s.tableName, metricFamily); err != nil {
 		return err
 	}
+	if err := s.adminClient.SetGCPolicy(ctx, s.tableName, metricFamily, bigtable.MaxVersionsPolicy(1)); err != nil {
+		return err
+	}
 
 	if err := s.createTableIfNotExist(ctx, s.metaTableName); err != nil {
 		return err
 	}
 	if err := s.createColumnFamilyIfNotExist(ctx, s.metaTableName, indexRowLabelFamily); err != nil {
+		return err
+	}
+	if err := s.adminClient.SetGCPolicy(ctx, s.metaTableName, indexRowLabelFamily, bigtable.MaxVersionsPolicy(1)); err != nil {
 		return err
 	}
 	return nil
@@ -262,6 +268,10 @@ func (s *Store) Read(ctx context.Context, req *prompb.ReadRequest) (*prompb.Read
 		wg.Add(1)
 		go func(k int) {
 			defer wg.Done()
+			// sort label matcher
+			// sort.Slice(req.Queries[k].Matchers, func(i, j int) bool {
+			// 	return req.Queries[k].Matchers[i].Name < req.Queries[k].Matchers[j].Name
+			// })
 			ts, err := s.Query(ctx, req.Queries[k])
 			if err != nil {
 				return
