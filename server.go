@@ -135,6 +135,7 @@ func (s *Server) HandleWrite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.Put(r.Context(), req); err != nil {
+		s.Logger.Error("Put error", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -166,12 +167,14 @@ func (s *Server) HandleRead(w http.ResponseWriter, r *http.Request) {
 	s.Logger.Info("Read", zap.String("req.string", req.String()))
 	res, err := s.store.Read(r.Context(), req)
 	if err != nil {
+		s.Logger.Error("Read error", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	data, err := res.Marshal()
 	if err != nil {
+		s.Logger.Error("Marshal error", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -37,7 +37,7 @@ func TestQueryMatchersToLabelsMatcher(t *testing.T) {
 			},
 			notmatches: [][]prompb.Label{
 				[]prompb.Label{{Name: "l2", Value: "v2"}, {Name: "l1", Value: "v1,v1.2"}}, // one wrong value
-				[]prompb.Label{{Name: "l2", Value: "v2"}, {Name: "l1", Value: "v1"}},      // two wrong values
+				[]prompb.Label{{Name: "l1", Value: "v1"}, {Name: "l2", Value: "v2"}},      // two wrong values
 				[]prompb.Label{},
 			},
 		},
