@@ -92,8 +92,10 @@ func (m LabelsMatcher) Match(labels []prompb.Label) (ok bool) {
 	// every sinlge one of matchers has to be satisfied
 	// matchers: e e g h
 	// labels:   c d e f g h i j k
-	var k int
-	for i := range m {
+	var (
+		i, k int
+	)
+	for i < len(m) {
 		if m[i].Name < labels[k].Name {
 			return false
 		}
@@ -105,6 +107,7 @@ func (m LabelsMatcher) Match(labels []prompb.Label) (ok bool) {
 			// matched,
 			// the next matcher might have the same name, don't move k yet
 			k++
+			i++
 			continue
 		}
 		// >
@@ -112,9 +115,8 @@ func (m LabelsMatcher) Match(labels []prompb.Label) (ok bool) {
 			// k is the last one already...
 			return false
 		}
-		// needs to bump k
+		// m.Name > label.Name, needs to bump k
 		k++
 	}
-
 	return true
 }
