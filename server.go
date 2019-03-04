@@ -22,10 +22,6 @@ import (
 	"google.golang.org/grpc/codes"
 )
 
-const (
-	defaultNamespace = "default"
-)
-
 // Server -
 type Server struct {
 	httpServer *http.Server
@@ -77,7 +73,7 @@ func NewServerWithConfig(cfg *Config) (*Server, error) {
 
 	var storeOps = []StoreOptionFunc{
 		StoreWithBigtableClient(btc),
-		StoreWithTableName(cfg.Bigtable.Table),
+		StoreWithTableNamePrefix(cfg.Bigtable.TablePrefix),
 	}
 
 	if cfg.EnsureTables {
@@ -138,7 +134,7 @@ func (s *Server) HandleWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.Put(r.Context(), defaultNamespace, req); err != nil {
+	if err := s.store.Put(r.Context(), req); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -168,7 +164,7 @@ func (s *Server) HandleRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Logger.Info("Read", zap.String("req.string", req.String()))
-	res, err := s.store.Read(r.Context(), defaultNamespace, req)
+	res, err := s.store.Read(r.Context(), req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

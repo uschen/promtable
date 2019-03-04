@@ -9,10 +9,10 @@ type Config struct {
 	EnsureTables bool
 
 	Bigtable struct {
-		Table     string
-		Instance  string
-		ProjectID string
-		KeyPath   string
+		TablePrefix string
+		Instance    string
+		ProjectID   string
+		KeyPath     string
 	}
 
 	Web struct {
@@ -28,7 +28,7 @@ func ParseFlags() *Config {
 	flag.StringVar(&cfg.Bigtable.ProjectID, "bigtable.project_id", "", "The Cloud Bigtable Project ID")
 	flag.StringVar(&cfg.Bigtable.KeyPath, "bigtable.keypath", "", "Google Cloud JSON key file path (optional)")
 	flag.StringVar(&cfg.Web.Listen, "web.listen", ":9202", "Address to listen on for web endpoints.")
-	flag.StringVar(&cfg.Bigtable.Table, "bigtable.table", "", "bigtable table name for metrics")
+	flag.StringVar(&cfg.Bigtable.TablePrefix, "bigtable.table_prefix", "", "bigtable table prefix for metrics and meta")
 	flag.BoolVar(&cfg.EnsureTables, "ensure-tables", false, "if true, will ensure bigtable tables on startup")
 	flag.Parse()
 

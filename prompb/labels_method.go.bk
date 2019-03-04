@@ -1,0 +1,10 @@
+package prompb
+
+func (l *Labels) Len() int           { return len(l.Labels) }
+func (l *Labels) Less(i, j int) bool { return l.Labels[i].Name < l.Labels[j].Name }
+func (l *Labels) Swap(i, j int)      { l.Labels[i], l.Labels[j] = l.Labels[j], l.Labels[i] }
+
+// ToLabelsString - comma separated representation of labels
+func (l *Labels) ToLabelsString() string {
+
+}
