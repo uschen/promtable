@@ -52,11 +52,11 @@ func queryMatcherToLabelMatcher(m *prompb.LabelMatcher) (*labelMatcher, error) {
 		}
 		if !not {
 			lm.matchFunc = func(v string) bool {
-				return regexMatch.MatchString(lv)
+				return regexMatch.MatchString(v)
 			}
 		} else {
 			lm.matchFunc = func(v string) bool {
-				return !regexMatch.MatchString(lv)
+				return !regexMatch.MatchString(v)
 			}
 		}
 	}

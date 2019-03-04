@@ -59,6 +59,24 @@ func TestQueryMatchersToLabelsMatcher(t *testing.T) {
 				[]prompb.Label{},
 			},
 		},
+		{
+			input: []*prompb.LabelMatcher{
+				{
+					Type:  prompb.LabelMatcher_RE,
+					Name:  "l2",
+					Value: "v2",
+				},
+			},
+			matches: [][]prompb.Label{
+				[]prompb.Label{{Name: "l1", Value: "v1,v1.2"}, {Name: "l2", Value: "v2"}},
+				[]prompb.Label{{Name: "l1", Value: "v1,v1.2"}, {Name: "l2", Value: "v2"}, {Name: "l3", Value: "v3"}}, // more values
+			},
+			notmatches: [][]prompb.Label{
+				[]prompb.Label{{Name: "l1", Value: "v1,v1.2"}, {Name: "l2", Value: "v3"}}, // one wrong value
+				[]prompb.Label{{Name: "l1", Value: "v1"}, {Name: "l2", Value: "v4"}},      // two wrong values
+				[]prompb.Label{},
+			},
+		},
 	}
 	for _, test := range tests {
 		actual, err := promtable.QueryMatchersToLabelsMatcher(test.input)
