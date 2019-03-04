@@ -4,4 +4,16 @@ steps:
   args:
   - '-c'
   - |
-    apk add make bash; make ci-test
+    apk add make bash git; \
+    ls -al; \
+    make ci-test; \
+    make ci-build
+- name: 'gcr.io/cloud-builders/docker'
+  args: 
+  - 'build'
+  - '-t'
+  - 'gcr.io/pub-registry-chen-dev/promtable:${BRANCH_NAME}'
+  - '.'
+
+images:
+- 'gcr.io/pub-registry-chen-dev/promtable:${BRANCH_NAME}'
