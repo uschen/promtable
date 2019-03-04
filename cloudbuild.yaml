@@ -12,8 +12,8 @@ steps:
   args: 
   - 'build'
   - '-t'
-  - 'gcr.io/bigreat/promtable:${BRANCH_NAME}'
+  - 'gcr.io/pub-registry-chen-dev/promtable:${BRANCH_NAME}'
   - '.'
 
 images:
-- 'gcr.io/bigreat/promtable:${BRANCH_NAME}'
+- 'gcr.io/pub-registry-chen-dev/promtable:${BRANCH_NAME}'
