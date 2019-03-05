@@ -2,6 +2,7 @@ package promtable
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sort"
@@ -208,7 +209,7 @@ func (s *Store) Put(ctx context.Context, req *prompb.WriteRequest) error {
 		for i := range samples {
 			mut.Set(
 				metricFamily,
-				string(Int64ToBytes(samples[i].Timestamp)), // column
+				TimestampToColumn(samples[i].Timestamp), // column
 				bigtable.Timestamp(samples[i].Timestamp*1e3),
 				Float64ToBytes(samples[i].Value), // value
 			)
@@ -319,11 +320,15 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 		bigtable.FamilyFilter(metricFamily),
 	}
 
-	if cf := QueryToBigtableColumnFilter(q.StartTimestampMs, q.EndTimestampMs); cf != nil {
-		filters = append(filters, cf)
-	}
+	// if cf := QueryToBigtableColumnFilter(q.StartTimestampMs, q.EndTimestampMs); cf != nil {
+	// 	filters = append(filters, cf)
+	// }
 
 	filters = append(filters, bigtable.LatestNFilter(1))
+
+	if tf := QueryToBigtableTimeFilter(q.StartTimestampMs, q.EndTimestampMs); tf != nil {
+		filters = append(filters, tf)
+	}
 
 	var readErr error
 	err = s.tbl.ReadRows(ctx, rrl, func(r bigtable.Row) bool {
@@ -572,19 +577,38 @@ func (s *Store) createColumnFamilyIfNotExist(ctx context.Context, table string, 
 	return nil
 }
 
-// QueryToBigtableColumnFilter -
-func QueryToBigtableColumnFilter(startMs, endMs int64) bigtable.Filter {
+// // QueryToBigtableColumnFilter -
+// func QueryToBigtableColumnFilter(startMs, endMs int64) bigtable.Filter {
+// 	if startMs == 0 && endMs == 0 {
+// 		return nil
+// 	}
+// 	var begin, end string
+// 	if startMs != 0 {
+// 		begin = string(Int64ToBytes(startMs))
+// 	}
+// 	if endMs != 0 {
+// 		end = string(Int64ToBytes(endMs + 1))
+// 	}
+// 	return bigtable.ColumnRangeFilter(metricFamily, begin, end)
+// }
+
+// QueryToBigtableTimeFilter -
+func QueryToBigtableTimeFilter(startMs, endMs int64) bigtable.Filter {
 	if startMs == 0 && endMs == 0 {
 		return nil
 	}
-	var begin, end string
-	if startMs != 0 {
-		begin = string(Int64ToBytes(startMs))
+	// bt TimestampRange, start is inclusive, end is exclusive
+	if endMs == 0 {
+		return bigtable.TimestampRangeFilterMicros(bigtable.Timestamp(startMs*1e3), bigtable.Timestamp(0))
 	}
-	if endMs != 0 {
-		end = string(Int64ToBytes(endMs + 1))
-	}
-	return bigtable.ColumnRangeFilter(metricFamily, begin, end)
+	return bigtable.TimestampRangeFilterMicros(bigtable.Timestamp(startMs*1e3), bigtable.Timestamp((endMs+1)*1e3))
+}
+
+// TimestampToColumn column is the delta within the range.
+func TimestampToColumn(ts int64) string {
+	buf := make([]byte, 4)
+	n := binary.PutUvarint(buf, uint64(ts%DefaultBucketSizeMilliSeconds))
+	return string(buf[:n])
 }
 
 // BtRowToPromSamples -
