@@ -272,6 +272,8 @@ func (bts *btTestingServer) Close() {
 	}
 	if err := bts.c.Close(); err != nil {
 	}
+	if err := bts.store.Close(); err != nil {
+	}
 }
 
 func newBTTestingServer(t *testing.T) *btTestingServer {

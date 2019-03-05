@@ -1,13 +1,14 @@
 package promtable
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
+	"time"
 
 	"cloud.google.com/go/bigtable"
 	"github.com/uschen/promtable/prompb"
@@ -53,6 +54,12 @@ type Store struct {
 	tbl  *bigtable.Table
 	mtbl *bigtable.Table
 
+	metaWriteCache     sync.Map
+	metaCacheSizeBytes uint64
+
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	logger *zap.Logger
 }
 
@@ -90,7 +97,18 @@ func NewStore(options ...StoreOptionFunc) (*Store, error) {
 
 	s.tbl = s.c.Open(s.tableName)
 	s.mtbl = s.c.Open(s.metaTableName)
+
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+
+	go s.RunMetaCacheGC()
+
 	return s, nil
+}
+
+// Close -
+func (s *Store) Close() error {
+	s.cancel()
+	return nil
 }
 
 // StoreWithLogger -
@@ -179,23 +197,27 @@ func (s *Store) Put(ctx context.Context, req *prompb.WriteRequest) error {
 		}
 
 		rkPrefix := name + "#" + labelsString + "#"
+		var buf bytes.Buffer
 		for base, samples := range baseBucket {
+			buf.Reset()
 			// metrics
-			var rkBuilder strings.Builder
-			rkBuilder.WriteString(rkPrefix)
-			rkBuilder.Write(Int64ToBytes(base))
-			rk := rkBuilder.String()
+			buf.WriteString(rkPrefix)
+			buf.Write(Int64ToBytes(base))
+			rk := buf.String()
 
 			buckets[rk] = append(buckets[rk], samples...)
 
-			// meta
-			var mrkBuilder strings.Builder
-			mrkBuilder.WriteString(name)
-			mrkBuilder.WriteRune('#')
-			mrkBuilder.Write(Int64ToBytes(base))
-			metaRK := mrkBuilder.String()
+			// check if meta is already written, caching is use metrics rowkey
+			if _, ok := s.metaWriteCache.LoadOrStore(rk, time.Now()); !ok {
+				// meta
+				buf.Reset()
+				buf.WriteString(name)
+				buf.WriteRune('#')
+				buf.Write(Int64ToBytes(base))
+				metaRK := buf.String()
 
-			metaBuckets[metaRK] = append(metaBuckets[metaRK], labelsString)
+				metaBuckets[metaRK] = append(metaBuckets[metaRK], labelsString)
+			}
 		}
 	}
 
@@ -366,6 +388,32 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 		i++
 	}
 	return res, nil
+}
+
+// RunMetaCacheGC -
+func (s *Store) RunMetaCacheGC() {
+	s.logger.Info("RunMetaCacheGC started")
+	// setup ticker for every 10min
+	c := time.NewTicker(10 * time.Minute)
+	defer c.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			s.logger.Info("RunMetaCacheGC exist")
+			return
+		case <-c.C:
+			t := time.Now().Add(-10 * time.Minute)
+			s.metaWriteCache.Range(func(k, v interface{}) bool {
+				if v.(time.Time).Before(t) {
+					// 10 min old
+					s.metaWriteCache.Delete(k)
+					s.logger.Info("RunMetaCacheGC deletes", zap.String("k", k.(string)))
+				}
+				return true
+			})
+		}
+	}
 }
 
 // SeriesRange - represent a continues row range for a series.

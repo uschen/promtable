@@ -235,6 +235,10 @@ func (s *Server) Stop(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 
+	if err := s.store.Close(); err != nil {
+		errs = append(errs, err)
+	}
+
 	if len(errs) != 0 {
 		return fmt.Errorf("HTTPServer.Close with errors: %v", errs)
 	}
