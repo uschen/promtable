@@ -157,8 +157,6 @@ func (s *Store) EnsureTables(ctx context.Context) error {
 // Put -
 // for each Timeseries, prepare the metric_name, labelsString first.
 func (s *Store) Put(ctx context.Context, req *prompb.WriteRequest) error {
-	// map[<metric_name>#<labelsString>#<base>][]prompb.Sample
-
 	// write metrics first
 	var buckets = make(map[string][]prompb.Sample) // map<metric_rowkey>[]prompb.Sample
 	var metaBuckets = make(map[string][]string)    // map<meta_rowkey>labelsString
@@ -262,16 +260,12 @@ func (s *Store) Read(ctx context.Context, req *prompb.ReadRequest) (*prompb.Read
 	var wg sync.WaitGroup
 
 	var qrs = make([]*prompb.QueryResult, len(req.Queries))
-	// var tsm = make(map[MetricIdentifier][]*prompb.TimeSeries)
 
 	for i := range req.Queries {
 		wg.Add(1)
 		go func(k int) {
 			defer wg.Done()
-			// sort label matcher
-			// sort.Slice(req.Queries[k].Matchers, func(i, j int) bool {
-			// 	return req.Queries[k].Matchers[i].Name < req.Queries[k].Matchers[j].Name
-			// })
+			// TODO: sort?
 			ts, err := s.Query(ctx, req.Queries[k])
 			if err != nil {
 				return
@@ -333,10 +327,6 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 
 	var readErr error
 	err = s.tbl.ReadRows(ctx, rrl, func(r bigtable.Row) bool {
-		// name, metricID, labels, ok := rkFilter(r.Key())
-		// if !ok {
-		// 	return true
-		// }
 		ss := BtRowToPromSamples(r)
 		// rowkey: <metric_name>#<labelsString>#base
 		rk := r.Key()
@@ -388,7 +378,10 @@ type SeriesRange struct {
 
 // Stirng -
 func (s *SeriesRange) Stirng() string {
-	return fmt.Sprintf("SeriesRange: [StartMs: %d, EndMs: %d, BaseStart: %x, BaseEnd: %x, Name: %s, LabelsString: %s, Labels: %v", s.StartMs, s.EndMs, s.BaseStart, s.BaseEnd, s.Name, s.LabelsString, s.Labels)
+	return fmt.Sprintf(
+		"SeriesRange: [StartMs: %d, EndMs: %d, BaseStart: %x, BaseEnd: %x, Name: %s, LabelsString: %s, Labels: %v",
+		s.StartMs, s.EndMs, s.BaseStart, s.BaseEnd, s.Name, s.LabelsString, s.Labels,
+	)
 }
 
 // NewMetricRowRange -
@@ -484,7 +477,8 @@ func (s *Store) QueryMetaRows(ctx context.Context, q *prompb.Query) ([]SeriesRan
 	if readErr != nil {
 		return nil, err
 	}
-	// convert metaRows into SeriesRange and filter out which metaRowBaseWithColumn are actually appliable to the query.
+	// convert metaRows into SeriesRange and filter out
+	// which metaRowBaseWithColumn are actually appliable to the query.
 	lsm, err := QueryMatchersToLabelsMatcher(q.Matchers[1:])
 	if err != nil {
 		return nil, err
