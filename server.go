@@ -74,6 +74,7 @@ func NewServerWithConfig(cfg *Config) (*Server, error) {
 	var storeOps = []StoreOptionFunc{
 		StoreWithBigtableClient(btc),
 		StoreWithTableNamePrefix(cfg.Bigtable.TablePrefix),
+		StoreWithLogger(s.Logger),
 	}
 
 	if cfg.EnsureTables {
