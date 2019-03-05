@@ -15,31 +15,48 @@ func LabelsToRowKeyComponents(labels []prompb.Label) (name, labelsString string,
 	}
 	name = labels[0].Value
 	var lsb strings.Builder
+	// write label.Name first
 	for i := 1; i < len(labels); i++ {
 		lsb.WriteString(labels[i].Name)
-		lsb.WriteString("=")
-		lsb.WriteString(EscapeLabelValue(labels[i].Value))
-		if i != len(labels)-1 {
-			lsb.WriteString(",")
-		}
+		lsb.WriteRune(',')
 	}
+	for i := 1; i < len(labels)-1; i++ {
+		lsb.WriteString(EscapeLabelValue(labels[i].Value))
+		lsb.WriteRune(',')
+	}
+	lsb.WriteString(EscapeLabelValue(labels[len(labels)-1].Value))
+
+	// for i := 1; i < len(labels); i++ {
+	// 	lsb.WriteString(labels[i].Name)
+	// 	lsb.WriteString("=")
+	// 	lsb.WriteString(EscapeLabelValue(labels[i].Value))
+	// 	if i != len(labels)-1 {
+	// 		lsb.WriteString(",")
+	// 	}
+	// }
 	return name, lsb.String(), nil
 }
 
 // LabelsFromString -
 func LabelsFromString(labelsString string) ([]prompb.Label, error) {
-	labelStrings := strings.Split(labelsString, ",")
-	if len(labelStrings) == 0 {
+	if labelsString == "" {
 		return nil, nil
 	}
-	var labels = make([]prompb.Label, len(labelStrings))
-	for i := range labelStrings {
-		kv := strings.Split(labelStrings[i], "=")
-		if len(kv) != 2 {
-			return nil, errors.New("unable to parse label: '" + labelStrings[i] + "'")
+	parts := strings.Split(labelsString, ",")
+	var (
+		n   = len(parts)
+		n12 = n / 2
+	)
+
+	if n%2 != 0 {
+		return nil, errors.New("invalid labelsString received '" + labelsString + "'")
+	}
+	var labels = make([]prompb.Label, n12)
+	for i := 0; i < n12; i++ {
+		labels[i] = prompb.Label{
+			Name:  parts[i],
+			Value: UnescapeLabelValue(parts[i+n12]),
 		}
-		labels[i] = prompb.Label{}
-		labels[i].Name, labels[i].Value = kv[0], UnescapeLabelValue(kv[1])
 	}
 	return labels, nil
 }

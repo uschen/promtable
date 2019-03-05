@@ -5,13 +5,13 @@ import "strings"
 var escapeReplacer = strings.NewReplacer(
 	"#", "%23",
 	",", "%2c",
-	"=", "%3d",
+	// "=", "%3d",
 )
 
 var unescapeReplacer = strings.NewReplacer(
 	"%23", "#",
 	"%2c", ",",
-	"%3d", "=",
+	// "%3d", "=",
 )
 
 // EscapeLabelValue -

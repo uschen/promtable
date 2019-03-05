@@ -185,7 +185,9 @@ func (s *Store) Put(ctx context.Context, req *prompb.WriteRequest) error {
 			rkBuilder.WriteString(rkPrefix)
 			rkBuilder.Write(Int64ToBytes(base))
 			rk := rkBuilder.String()
+
 			buckets[rk] = append(buckets[rk], samples...)
+
 			// meta
 			var mrkBuilder strings.Builder
 			mrkBuilder.WriteString(name)
