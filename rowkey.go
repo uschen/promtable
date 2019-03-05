@@ -20,20 +20,13 @@ func LabelsToRowKeyComponents(labels []prompb.Label) (name, labelsString string,
 		lsb.WriteString(labels[i].Name)
 		lsb.WriteRune(',')
 	}
+	// write label.Value
 	for i := 1; i < len(labels)-1; i++ {
 		lsb.WriteString(EscapeLabelValue(labels[i].Value))
 		lsb.WriteRune(',')
 	}
-	lsb.WriteString(EscapeLabelValue(labels[len(labels)-1].Value))
+	lsb.WriteString(EscapeLabelValue(labels[len(labels)-1].Value)) // write the last one without append ','
 
-	// for i := 1; i < len(labels); i++ {
-	// 	lsb.WriteString(labels[i].Name)
-	// 	lsb.WriteString("=")
-	// 	lsb.WriteString(EscapeLabelValue(labels[i].Value))
-	// 	if i != len(labels)-1 {
-	// 		lsb.WriteString(",")
-	// 	}
-	// }
 	return name, lsb.String(), nil
 }
 

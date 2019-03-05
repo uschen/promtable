@@ -322,10 +322,6 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 		bigtable.FamilyFilter(metricFamily),
 	}
 
-	// if cf := QueryToBigtableColumnFilter(q.StartTimestampMs, q.EndTimestampMs); cf != nil {
-	// 	filters = append(filters, cf)
-	// }
-
 	filters = append(filters, bigtable.LatestNFilter(1))
 
 	if tf := QueryToBigtableTimeFilter(q.StartTimestampMs, q.EndTimestampMs); tf != nil {
@@ -457,7 +453,6 @@ func (s *Store) QueryMetaRows(ctx context.Context, q *prompb.Query) ([]SeriesRan
 			return false
 		}
 		baseStr := rk[rkPrefixLen:]
-		// base := Int64FromBytes([]byte(baseStr))
 
 		for _, c := range r[indexRowLabelFamily] {
 			if len(c.Column) < indexRowLabelColumnPrefixLen {
@@ -578,21 +573,6 @@ func (s *Store) createColumnFamilyIfNotExist(ctx context.Context, table string, 
 	}
 	return nil
 }
-
-// // QueryToBigtableColumnFilter -
-// func QueryToBigtableColumnFilter(startMs, endMs int64) bigtable.Filter {
-// 	if startMs == 0 && endMs == 0 {
-// 		return nil
-// 	}
-// 	var begin, end string
-// 	if startMs != 0 {
-// 		begin = string(Int64ToBytes(startMs))
-// 	}
-// 	if endMs != 0 {
-// 		end = string(Int64ToBytes(endMs + 1))
-// 	}
-// 	return bigtable.ColumnRangeFilter(metricFamily, begin, end)
-// }
 
 // QueryToBigtableTimeFilter -
 func QueryToBigtableTimeFilter(startMs, endMs int64) bigtable.Filter {
