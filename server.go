@@ -75,6 +75,7 @@ func NewServerWithConfig(cfg *Config) (*Server, error) {
 		StoreWithBigtableClient(btc),
 		StoreWithTableNamePrefix(cfg.Bigtable.TablePrefix),
 		StoreWithLogger(s.Logger),
+		StoreWithHashLabels(cfg.HashMetricName),
 	}
 
 	if cfg.EnsureTables {

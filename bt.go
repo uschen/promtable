@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/bigtable"
+	"github.com/twmb/murmur3"
 	"github.com/uschen/promtable/prompb"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -34,6 +35,9 @@ const (
 
 	// DefaultBucketSizeMilliSeconds -
 	DefaultBucketSizeMilliSeconds int64 = 24 * 60 * 60 * 1000
+
+	hashedMetricRowKeyPrefixLen = 16                              // 128bits,16bytes
+	hashedMetricRowkeyLen       = hashedMetricRowKeyPrefixLen + 8 // 8bytes base
 )
 
 var (
@@ -59,6 +63,8 @@ type Store struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	hashLabels bool
 
 	logger *zap.Logger
 }
@@ -93,6 +99,10 @@ func NewStore(options ...StoreOptionFunc) (*Store, error) {
 
 	if s.logger == nil {
 		s.logger = zap.NewNop()
+	}
+
+	if s.hashLabels {
+		s.logger.Info("Store will store metric with hashed rowkey")
 	}
 
 	s.tbl = s.c.Open(s.tableName)
@@ -139,6 +149,14 @@ func StoreWithBigtableClient(c *bigtable.Client) StoreOptionFunc {
 func StoreWithBigtableAdminClient(ac *bigtable.AdminClient) StoreOptionFunc {
 	return func(s *Store) error {
 		s.adminClient = ac
+		return nil
+	}
+}
+
+// StoreWithHashLabels -
+func StoreWithHashLabels(hash bool) StoreOptionFunc {
+	return func(s *Store) error {
+		s.hashLabels = hash
 		return nil
 	}
 }
@@ -196,8 +214,19 @@ func (s *Store) Put(ctx context.Context, req *prompb.WriteRequest) error {
 			baseBucket[base] = append(baseBucket[base], ts.Samples[k])
 		}
 
-		rkPrefix := name + "#" + labelsString + "#"
-		var buf bytes.Buffer
+		var (
+			rkPrefix = name + "#" + labelsString
+			h128     = murmur3.New128()
+
+			buf bytes.Buffer
+		)
+		if s.hashLabels {
+			h128.Write([]byte(rkPrefix))
+			rkPrefix = string(h128.Sum(nil))
+		} else {
+			rkPrefix = rkPrefix + "#"
+		}
+
 		for base, samples := range baseBucket {
 			buf.Reset()
 			// metrics
@@ -333,11 +362,28 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 		sampleLabelsStrings   []string
 		sampleBuckets         = make(map[string][]prompb.Sample)
 		expectedNamePrefixLen = len(name) + 1
-		expectedMinRowKeyLen  = len(name) + 2 + 8 // 2 '#' + 8 bytes base
+		expectedMinRowKeyLen  = len(name) + 1 + 1 + 8 // 2x'#' + 8 bytes base
+
+		buf  bytes.Buffer
+		h128 = murmur3.New128()
 	)
 	for i := range srs {
-		rrl[i] = NewMetricRowRange(srs[i].Name, srs[i].LabelsString, srs[i].BaseStart, srs[i].BaseEnd)
-		seriesRangeBucket[srs[i].LabelsString] = srs[i].Labels
+		buf.Reset()
+
+		buf.WriteString(srs[i].Name)
+		buf.WriteRune('#')
+		buf.WriteString(srs[i].LabelsString)
+		if s.hashLabels {
+			h128.Reset()
+			buf.WriteTo(h128)
+			rkP := string(h128.Sum(nil))
+			rrl[i] = NewMetricRowRange(rkP, srs[i].BaseStart, srs[i].BaseEnd)
+			seriesRangeBucket[rkP] = srs[i].Labels
+		} else {
+			buf.WriteRune('#')
+			rrl[i] = NewMetricRowRange(buf.String(), srs[i].BaseStart, srs[i].BaseEnd)
+			seriesRangeBucket[srs[i].LabelsString] = srs[i].Labels
+		}
 	}
 
 	var filters = []bigtable.Filter{
@@ -350,23 +396,47 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 		filters = append(filters, tf)
 	}
 
-	var readErr error
-	err = s.tbl.ReadRows(ctx, rrl, func(r bigtable.Row) bool {
-		ss := BtRowToPromSamples(r)
-		// rowkey: <metric_name>#<labelsString>#base
-		rk := r.Key()
-		if len(rk) < expectedMinRowKeyLen {
-			readErr = errors.New("invalid metric row key read: '" + rk + "'")
-			return false
+	var (
+		readErr  error
+		readFunc func(r bigtable.Row) bool
+	)
+	if s.hashLabels {
+		readFunc = func(r bigtable.Row) bool {
+			// rowkey: hash(<metric_name>#<labelsString>)base
+			//         -> 16 bytes                       ->8 bytes
+			rk := r.Key()
+			if len(rk) != hashedMetricRowkeyLen {
+				readErr = errors.New("invalid hashed metric row key read: '" + rk + "'")
+				return false
+			}
+			ss := BtRowToPromSamples(r)
+			hashedRkPrefix := rk[:16]
+			if _, ok := sampleBuckets[hashedRkPrefix]; !ok {
+				// maintain order samples order
+				sampleLabelsStrings = append(sampleLabelsStrings, hashedRkPrefix)
+			}
+			sampleBuckets[hashedRkPrefix] = append(sampleBuckets[hashedRkPrefix], ss...)
+			return true
 		}
-		labelsString := rk[expectedNamePrefixLen : len(rk)-9]
-		if _, ok := sampleBuckets[labelsString]; !ok {
-			// maintain order
-			sampleLabelsStrings = append(sampleLabelsStrings, labelsString)
+	} else {
+		readFunc = func(r bigtable.Row) bool {
+			ss := BtRowToPromSamples(r)
+			// rowkey: <metric_name>#<labelsString>#base
+			rk := r.Key()
+			if len(rk) < expectedMinRowKeyLen {
+				readErr = errors.New("invalid metric row key read: '" + rk + "'")
+				return false
+			}
+			labelsString := rk[expectedNamePrefixLen : len(rk)-9]
+			if _, ok := sampleBuckets[labelsString]; !ok {
+				// maintain order samples order
+				sampleLabelsStrings = append(sampleLabelsStrings, labelsString)
+			}
+			sampleBuckets[labelsString] = append(sampleBuckets[labelsString], ss...)
+			return true
 		}
-		sampleBuckets[labelsString] = append(sampleBuckets[labelsString], ss...)
-		return true
-	}, bigtable.RowFilter(
+	}
+	err = s.tbl.ReadRows(ctx, rrl, readFunc, bigtable.RowFilter(
 		bigtable.ChainFilters(
 			filters...,
 		),
@@ -385,7 +455,7 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 			Samples: sampleBuckets[sampleLabelsStrings[i]],
 		}
 		res[i] = ts
-		i++
+		// i++
 	}
 	return res, nil
 }
@@ -436,8 +506,9 @@ func (s *SeriesRange) Stirng() string {
 }
 
 // NewMetricRowRange -
-func NewMetricRowRange(name, labelsString string, baseStart, baseEnd string) bigtable.RowRange {
-	rkPrefix := name + "#" + labelsString + "#"
+// for hashed rowkey, rkPrefix will be: hash(name#labelsString) // the lenght is 128bits/16bytes, which is predicatable.
+// for none hashed rowkey, it will be name#labelsString#
+func NewMetricRowRange(rkPrefix string, baseStart, baseEnd string) bigtable.RowRange {
 	if baseStart == "" && baseEnd == "" {
 		rr := bigtable.PrefixRange(rkPrefix)
 		return rr
@@ -658,6 +729,11 @@ func BtRowToPromSamples(r bigtable.Row) []prompb.Sample {
 	})
 	return samples
 }
+
+// HashLabelsString -
+// func HashLabelsString(ls string) []byte {
+
+// }
 
 // prefixSuccessor returns the lexically smallest string greater than the
 // prefix, if it exists, or "" otherwise.  In either case, it is the string
