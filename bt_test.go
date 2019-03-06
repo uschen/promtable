@@ -57,7 +57,7 @@ func TestQuery(t *testing.T) {
 	s := newBTTestingServer(t)
 	defer s.Close()
 
-	baseDay := int64(5)
+	baseDay := int64(17961)
 	ts := complexSerices(baseDay)
 	var exp = make([]*prompb.TimeSeries, len(ts))
 	for i := range ts {
@@ -256,6 +256,24 @@ func TestBigtable_Read(t *testing.T) {
 	}
 	assert.EqualValues(t, expected, res.Results)
 }
+
+// func TestTimestampToColumn(t *testing.T) {
+// 	var (
+// 		baseTs      = int64(1551841950018)
+// 		pre         = promtable.TimestampToColumn(baseTs)
+// 		ok     bool = true
+// 	)
+
+// 	for i := int64(1); i < 1000; i++ {
+// 		cur := promtable.TimestampToColumn(baseTs + i*100)
+// 		if pre >= cur {
+// 			ok = false
+// 			break
+// 		}
+// 		pre = cur
+// 	}
+// 	assert.True(t, ok)
+// }
 
 type btTestingServer struct {
 	ac    *bigtable.AdminClient

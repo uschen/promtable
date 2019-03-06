@@ -652,6 +652,10 @@ func BtRowToPromSamples(r bigtable.Row) []prompb.Sample {
 			Timestamp: int64(v.Timestamp) / 1000,
 		}
 	}
+	// have to sort due to column is uvarint now... sort order is not maintained.
+	sort.Slice(samples, func(i, j int) bool {
+		return samples[i].Timestamp < samples[j].Timestamp
+	})
 	return samples
 }
 
