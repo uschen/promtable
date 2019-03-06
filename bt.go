@@ -66,6 +66,8 @@ type Store struct {
 
 	hashLabels bool
 
+	metrics *StoreMetrics
+
 	logger *zap.Logger
 }
 
@@ -110,6 +112,7 @@ func NewStore(options ...StoreOptionFunc) (*Store, error) {
 
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
+	s.metrics = NewStoreMetrics()
 	go s.RunMetaCacheGC()
 
 	return s, nil
@@ -195,9 +198,11 @@ func (s *Store) EnsureTables(ctx context.Context) error {
 // for each Timeseries, prepare the metric_name, labelsString first.
 func (s *Store) Put(ctx context.Context, req *prompb.WriteRequest) error {
 	// write metrics first
+	s.metrics.IncPutTimeseriesCount(len(req.Timeseries))
 	var buckets = make(map[string][]prompb.Sample) // map<metric_rowkey>[]prompb.Sample
 	var metaBuckets = make(map[string][]string)    // map<meta_rowkey>labelsString
 	for i := range req.Timeseries {
+		s.metrics.IncPutSampleCount(len(req.Timeseries[i].Samples))
 		// metrics
 		ts := req.Timeseries[i]
 		sort.Slice(ts.Labels, func(i, j int) bool {
@@ -338,7 +343,7 @@ func (s *Store) Read(ctx context.Context, req *prompb.ReadRequest) (*prompb.Read
 		}
 		res.Results = append(res.Results, qrs[i])
 	}
-
+	s.metrics.IncQueryMetricTimeseriesReadCount(len(res.Results))
 	return res, nil
 }
 
@@ -355,6 +360,9 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 	if len(srs) == 0 {
 		return []*prompb.TimeSeries{}, nil
 	}
+
+	s.metrics.IncQuerySeriesRangesCount(len(srs))
+
 	var (
 		name                  = srs[0].Name
 		rrl                   = make(bigtable.RowRangeList, len(srs))
@@ -402,6 +410,7 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 	)
 	if s.hashLabels {
 		readFunc = func(r bigtable.Row) bool {
+			s.metrics.IncQueryMetricRowReadCount(1)
 			// rowkey: hash(<metric_name>#<labelsString>)base
 			//         -> 16 bytes                       ->8 bytes
 			rk := r.Key()
@@ -420,6 +429,7 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 		}
 	} else {
 		readFunc = func(r bigtable.Row) bool {
+			s.metrics.IncQueryMetricRowReadCount(1)
 			ss := BtRowToPromSamples(r)
 			// rowkey: <metric_name>#<labelsString>#base
 			rk := r.Key()
@@ -455,8 +465,10 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 			Samples: sampleBuckets[sampleLabelsStrings[i]],
 		}
 		res[i] = ts
+		s.metrics.IncQueryMetricSampleReadCount(len(ts.Samples))
 		// i++
 	}
+
 	return res, nil
 }
 
@@ -623,6 +635,7 @@ func (s *Store) QueryMetaRows(ctx context.Context, q *prompb.Query) ([]SeriesRan
 		}
 		// TODO: it is possible to combine the filter and parts in one loop, since in the filter, labels are looped.
 		if !lsm.Match(labels) {
+
 			// labels doesn't match
 			continue
 		}
@@ -630,6 +643,8 @@ func (s *Store) QueryMetaRows(ctx context.Context, q *prompb.Query) ([]SeriesRan
 		matchedLabels[metaRows[i].labelsString] = labels
 		labelsBases[metaRows[i].labelsString] = append(labelsBases[metaRows[i].labelsString], metaRows[i].base)
 	}
+	s.metrics.IncQueryMetaColumnReadCount(true, len(matchedLabels))
+	s.metrics.IncQueryMetaColumnReadCount(false, len(metaRows)-len(matchedLabels))
 	// for each matched labels, generate one SeriesRange
 	var (
 		res = make([]SeriesRange, len(matchedLabels))
