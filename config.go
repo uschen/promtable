@@ -8,6 +8,8 @@ import (
 type Config struct {
 	EnsureTables bool
 
+	HashMetricName bool
+
 	Bigtable struct {
 		TablePrefix string
 		Instance    string
@@ -30,6 +32,7 @@ func ParseFlags() *Config {
 	flag.StringVar(&cfg.Web.Listen, "web.listen", ":9202", "Address to listen on for web endpoints.")
 	flag.StringVar(&cfg.Bigtable.TablePrefix, "bigtable.table_prefix", "", "bigtable table prefix for metrics and meta")
 	flag.BoolVar(&cfg.EnsureTables, "ensure-tables", false, "if true, will ensure bigtable tables on startup")
+	flag.BoolVar(&cfg.HashMetricName, "hash-metric-name", true, "if true, will store metric name hashed")
 	flag.Parse()
 
 	return cfg

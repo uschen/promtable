@@ -105,6 +105,14 @@
   version = "v1.3.0"
 
 [[projects]]
+  branch = "master"
+  digest = "1:db1b3056e78b014caa45667149d12a2318da8c5719a918466027a9d80a921e22"
+  name = "github.com/twmb/murmur3"
+  packages = ["."]
+  pruneopts = "UT"
+  revision = "930dc7964b3063728bf18f50b7ff72837b7d9860"
+
+[[projects]]
   digest = "1:5baa1a55624558e55a544de8b81542193852b0d607a9e21d9296e82d3e698918"
   name = "go.opencensus.io"
   packages = [
@@ -330,6 +338,7 @@
     "github.com/gogo/protobuf/proto",
     "github.com/golang/snappy",
     "github.com/stretchr/testify/assert",
+    "github.com/twmb/murmur3",
     "go.uber.org/zap",
     "google.golang.org/api/option",
     "google.golang.org/grpc",
