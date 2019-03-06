@@ -16,6 +16,7 @@ import (
 
 	"cloud.google.com/go/bigtable"
 	"github.com/golang/snappy"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/uschen/promtable/prompb"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
@@ -33,6 +34,10 @@ type Server struct {
 	mux *http.ServeMux
 
 	l net.Listener
+
+	// prometheus metric
+	psrv      *http.Server
+	plistener net.Listener
 
 	Logger *zap.Logger
 }
@@ -110,6 +115,21 @@ func NewServerWithConfig(cfg *Config) (*Server, error) {
 		return nil, err
 	}
 	s.l = lis
+
+	if cfg.Metric.Enable {
+		prometheusListenStr := cfg.Metric.Listen
+		if prometheusListenStr == "" {
+			prometheusListenStr = "127.0.0.1:9100"
+		}
+		pLis, err := net.Listen("tcp", prometheusListenStr)
+		if err != nil {
+			return nil, err
+		}
+		s.plistener = pLis
+		s.psrv = &http.Server{
+			Handler: promhttp.Handler(),
+		}
+	}
 
 	return s, nil
 }
@@ -209,6 +229,19 @@ func (s *Server) Run() error {
 	}()
 	s.Logger.Info("HTTP Server Start", zap.String("Listen", s.cfg.Web.Listen))
 
+	// http prometheus metric server
+	if s.psrv != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer wgCancel() // signal other servers to close too.
+			if err := s.psrv.Serve(s.plistener); err != nil {
+				s.Logger.Error("http prometheus metric server exited with error", zap.Error(err))
+			}
+		}()
+		s.Logger.Info("prometheus metric http server started", zap.String("Listen", s.cfg.Metric.Listen))
+	}
+
 	// wait for signal
 	stop := make(chan os.Signal)
 	defer close(stop)
@@ -235,6 +268,12 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	if err := s.httpServer.Shutdown(ctx); err != nil && grpc.Code(err) != codes.Canceled {
 		errs = append(errs, err)
+	}
+
+	if s.psrv != nil {
+		if err := s.psrv.Shutdown(ctx); err != nil {
+			s.Logger.Warn("close http prometheus metric server error", zap.Error(err))
+		}
 	}
 
 	if err := s.store.Close(); err != nil {
