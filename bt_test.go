@@ -461,3 +461,63 @@ func complexSerices(baseDay int64, hash bool) ([]prompb.TimeSeries, map[string]*
 
 	return tss, tsm
 }
+
+var (
+	benchLabelsString = "instance=10.95.10.3:9100,job=kubernetes-pods,kubernetes_namespace=prd,kubernetes_pod_name=nu-media-video-encoding-task-worker-deployment-7f557f49cb-frl48,service=nu-media-video-encoding-task-worker,type=worker"
+	benchName         = "go_gc_duration_seconds"
+)
+
+func BenchmarkNameConcat(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_ = benchName + "#" + benchLabelsString
+	}
+}
+
+func BenchmarkNameBufferReset(b *testing.B) {
+	var buf bytes.Buffer
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		buf.WriteString(benchName)
+		buf.WriteRune('#')
+		buf.WriteString(benchLabelsString)
+		_ = buf.String()
+	}
+}
+
+func BenchmarkHash(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		var h128 = murmur3.New128()
+		var buf bytes.Buffer
+		buf.WriteString(benchLabelsString)
+		buf.Write(promtable.Int64ToBytes(5))
+		buf.WriteTo(h128)
+		_ = string(h128.Sum(nil))
+	}
+}
+
+func BenchmarkHashReset(b *testing.B) {
+	var h128 = murmur3.New128()
+	var buf bytes.Buffer
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		h128.Reset()
+
+		buf.WriteString(benchLabelsString)
+		buf.Write(promtable.Int64ToBytes(5))
+		h128.Write(buf.Bytes())
+		_ = string(h128.Sum(nil))
+	}
+}
+
+func BenchmarkHashResetWriteTo(b *testing.B) {
+	var h128 = murmur3.New128()
+	var buf bytes.Buffer
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		h128.Reset()
+		buf.WriteString(benchLabelsString)
+		buf.Write(promtable.Int64ToBytes(5))
+		buf.WriteTo(h128)
+		_ = string(h128.Sum(nil))
+	}
+}

@@ -112,7 +112,6 @@ func NewStore(options ...StoreOptionFunc) (*Store, error) {
 
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
-	s.metrics = NewStoreMetrics()
 	go s.RunMetaCacheGC()
 
 	return s, nil
@@ -160,6 +159,14 @@ func StoreWithBigtableAdminClient(ac *bigtable.AdminClient) StoreOptionFunc {
 func StoreWithHashLabels(hash bool) StoreOptionFunc {
 	return func(s *Store) error {
 		s.hashLabels = hash
+		return nil
+	}
+}
+
+// StoreWithEnableMetrics -
+func StoreWithEnableMetrics(enabled bool) StoreOptionFunc {
+	return func(s *Store) error {
+		s.metrics = NewStoreMetrics()
 		return nil
 	}
 }
@@ -226,6 +233,7 @@ func (s *Store) Put(ctx context.Context, req *prompb.WriteRequest) error {
 			buf bytes.Buffer
 		)
 		if s.hashLabels {
+			h128.Reset()
 			h128.Write([]byte(rkPrefix))
 			rkPrefix = string(h128.Sum(nil))
 		} else {
@@ -383,7 +391,7 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 		buf.WriteString(srs[i].LabelsString)
 		if s.hashLabels {
 			h128.Reset()
-			buf.WriteTo(h128)
+			h128.Write(buf.Bytes())
 			rkP := string(h128.Sum(nil))
 			rrl[i] = NewMetricRowRange(rkP, srs[i].BaseStart, srs[i].BaseEnd)
 			seriesRangeBucket[rkP] = srs[i].Labels
