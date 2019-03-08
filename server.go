@@ -81,6 +81,7 @@ func NewServerWithConfig(cfg *Config) (*Server, error) {
 		StoreWithTableNamePrefix(cfg.Bigtable.TablePrefix),
 		StoreWithLogger(s.Logger),
 		StoreWithHashLabels(cfg.HashMetricName),
+		StoreWithEnableMetrics(cfg.Metric.Enable),
 	}
 
 	if cfg.EnsureTables {
