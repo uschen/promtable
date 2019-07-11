@@ -19,20 +19,42 @@ option go_package = "prompb";
 import "types.proto";
 import "gogoproto/gogo.proto";
 
+
+option (gogoproto.sizer_all)            = true;
+option (gogoproto.marshaler_all)        = true;
+option (gogoproto.unmarshaler_all)      = true;
+// option (gogoproto.goproto_registration) = true;
+
 message WriteRequest {
+  option (gogoproto.goproto_unrecognized) = false;
+  option (gogoproto.goproto_unkeyed)      = false;
+  option (gogoproto.goproto_sizecache)    = false;
+
   repeated prometheus.TimeSeries timeseries = 1 [(gogoproto.nullable) = false];
 }
 
 message ReadRequest {
+  option (gogoproto.goproto_unrecognized) = false;
+  option (gogoproto.goproto_unkeyed)      = false;
+  option (gogoproto.goproto_sizecache)    = false;
+
   repeated Query queries = 1;
 }
 
 message ReadResponse {
+  option (gogoproto.goproto_unrecognized) = false;
+  option (gogoproto.goproto_unkeyed)      = false;
+  option (gogoproto.goproto_sizecache)    = false;
+
   // In same order as the request's queries.
   repeated QueryResult results = 1;
 }
 
 message Query {
+  option (gogoproto.goproto_unrecognized) = false;
+  option (gogoproto.goproto_unkeyed)      = false;
+  option (gogoproto.goproto_sizecache)    = false;
+
   int64 start_timestamp_ms = 1;
   int64 end_timestamp_ms = 2;
   repeated prometheus.LabelMatcher matchers = 3;
@@ -40,6 +62,10 @@ message Query {
 }
 
 message QueryResult {
+  option (gogoproto.goproto_unrecognized) = false;
+  option (gogoproto.goproto_unkeyed)      = false;
+  option (gogoproto.goproto_sizecache)    = false;
+
   // Samples within a time series must be ordered by time.
   repeated prometheus.TimeSeries timeseries = 1;
 }

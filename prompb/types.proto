@@ -18,27 +18,53 @@ option go_package = "prompb";
 
 import "gogoproto/gogo.proto";
 
+
+option (gogoproto.sizer_all)            = true;
+option (gogoproto.marshaler_all)        = true;
+option (gogoproto.unmarshaler_all)      = true;
+// option (gogoproto.goproto_registration) = true;
+
 message Sample {
+  option (gogoproto.goproto_unrecognized) = false;
+  option (gogoproto.goproto_unkeyed)      = false;
+  option (gogoproto.goproto_sizecache)    = false;
+
   double value    = 1;
   int64 timestamp = 2;
 }
 
 message TimeSeries {
+  option (gogoproto.goproto_unrecognized) = false;
+  option (gogoproto.goproto_unkeyed)      = false;
+  option (gogoproto.goproto_sizecache)    = false;
+
   repeated Label labels   = 1 [(gogoproto.nullable) = false];
   repeated Sample samples = 2 [(gogoproto.nullable) = false];
 }
 
 message Label {
+  option (gogoproto.goproto_unrecognized) = false;
+  option (gogoproto.goproto_unkeyed)      = false;
+  option (gogoproto.goproto_sizecache)    = false;
+
   string name  = 1;
   string value = 2;
 }
 
 message Labels {
+  option (gogoproto.goproto_unrecognized) = false;
+  option (gogoproto.goproto_unkeyed)      = false;
+  option (gogoproto.goproto_sizecache)    = false;
+
   repeated Label labels = 1 [(gogoproto.nullable) = false];
 }
 
 // Matcher specifies a rule, which can match or set of labels or not.
 message LabelMatcher {
+  option (gogoproto.goproto_unrecognized) = false;
+  option (gogoproto.goproto_unkeyed)      = false;
+  option (gogoproto.goproto_sizecache)    = false;
+
   enum Type {
     EQ  = 0;
     NEQ = 1;
@@ -51,6 +77,10 @@ message LabelMatcher {
 }
 
 message ReadHints {
+  option (gogoproto.goproto_unrecognized) = false;
+  option (gogoproto.goproto_unkeyed)      = false;
+  option (gogoproto.goproto_sizecache)    = false;
+
   int64 step_ms = 1;  // Query step size in milliseconds.
   string func = 2;    // String representation of surrounding function or aggregation.
   int64 start_ms = 3; // Start time in milliseconds.
