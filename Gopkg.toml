@@ -4,7 +4,8 @@
 
 [[constraint]]
   name = "cloud.google.com/go"
-  version = "0.36.0"
+  revision = "de254f943f7bc67d8079839602828d8f512119ef"
+  source = "github.com/uschen/google-cloud-go"
 
 [[constraint]]
   name = "github.com/golang/snappy"
