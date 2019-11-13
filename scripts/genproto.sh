@@ -10,8 +10,8 @@ if ! [[ "$0" =~ "scripts/genproto.sh" ]]; then
 	exit 255
 fi
 
-if ! [[ $(protoc --version) =~ "3.6.0" ]]; then
-	echo "could not find protoc 3.6.0, is it installed + in PATH?"
+if ! [[ $(protoc --version) =~ "3.8.0" ]]; then
+	echo "could not find protoc 3.8.0, is it installed + in PATH?"
 	exit 255
 fi
 
@@ -23,6 +23,8 @@ fi
 #     GO111MODULE=on go install -mod=vendor "$pkg"
 # done
 
+# go get -u github.com/gogo/protobuf/protoc-gen-gogofaster;
+
 PROM_ROOT="${PWD}"
 PROM_PATH="${PROM_ROOT}/prompb"
 GOGOPROTO_ROOT="${GOPATH}/src/github.com/gogo/protobuf"
@@ -33,7 +35,7 @@ DIRS="prompb"
 echo "generating code"
 for dir in ${DIRS}; do
 	pushd ${dir}
-		protoc --gogofast_out=plugins=grpc:. -I=. \
+		protoc --gogofaster_out=plugins=grpc:. -I=. \
             -I="${GOGOPROTO_PATH}" \
             -I="${PROM_PATH}" \
             ./*.proto
