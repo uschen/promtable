@@ -4,12 +4,24 @@
 
 [[constraint]]
   name = "cloud.google.com/go"
-  revision = "de254f943f7bc67d8079839602828d8f512119ef"
+  revision = "1228d6beb19102f0e578949f4240e93718c33e9a"
   source = "github.com/uschen/google-cloud-go"
+
+[[constraint]]
+  name = "google.golang.org/api"
+  version = "0.13.0"
+
+[[constraint]]
+  name = "google.golang.org/grpc"
+  version = "1.21.1"
 
 [[constraint]]
   name = "github.com/golang/snappy"
   version = "0.0.1"
+
+[[constraint]]
+  name = "google.golang.org/genproto"
+  revision = "919d9bdd9fe6f1a5dd95ce5d5e4cdb8fd3c516d0"
 
 [[constraint]]
   name = "go.uber.org/zap"
