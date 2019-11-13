@@ -1,5 +1,5 @@
 steps:
-- name: 'golang:1.12-alpine'
+- name: 'golang:1.13-alpine'
   entrypoint: sh
   args:
   - '-c'
