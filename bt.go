@@ -6,16 +6,20 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"time"
 
 	"cloud.google.com/go/bigtable"
 	"github.com/twmb/murmur3"
+	"github.com/uschen/promtable/pkg/btrowset"
 	"github.com/uschen/promtable/prompb"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+
+	btpb "google.golang.org/genproto/googleapis/bigtable/v2"
 )
 
 const (
@@ -33,15 +37,21 @@ const (
 	// DefaultBucketSizeHours -
 	DefaultBucketSizeHours int64 = 24 // 24 hours
 
-	// DefaultBucketSizeMilliSeconds -
+	// DefaultBucketSizeMilliSeconds - 24 hours.
 	DefaultBucketSizeMilliSeconds int64 = 24 * 60 * 60 * 1000
 
-	hashedMetricRowKeyPrefixLen = 16                              // 128bits,16bytes
-	hashedMetricRowkeyLen       = hashedMetricRowKeyPrefixLen + 8 // 8bytes base
+	hashedMetricRowKeyPrefixLen = 1 + 8 + 16                      // `#`, `Int64`, `128bits`
+	minHashedMetricRowkeyLen    = hashedMetricRowKeyPrefixLen + 8 // 8bytes base
+
+	colLen     = 4 + 8                          // 4 bytes for offset + 8 bytes for float64
+	fullColLen = metricFamilyPrefixLen + colLen // 2 + 4 + 8
 )
 
 var (
 	errUnImpl = errors.New("not implemented")
+
+	zeroBaseStart = string(Int64ToBytes(0))
+	maxBaseEnd    = string(Int64ToBytes(math.MaxInt64))
 )
 
 // Store - bigtable store
@@ -203,11 +213,32 @@ func (s *Store) EnsureTables(ctx context.Context) error {
 
 // Put -
 // for each Timeseries, prepare the metric_name, labelsString first.
+//
+// RowKey: <name>#<base><hashed labels>
+//   * name will be raw name
+//   * base will be encoded into 8 bytes
+//   * hashed labels will be using murmur3 128 (128 bits, 16 byes)
+//
+// Column Qualifier: <timestamp reminder><value>
+//   * 4 bytes timestamp reminder
+//   * 8 bytes
+//
+// Column Value: nil
+// Column Timestamp: sample timestamp
+//
 func (s *Store) Put(ctx context.Context, req *prompb.WriteRequest) error {
 	// write metrics first
 	s.metrics.IncPutTimeseriesCount(len(req.Timeseries))
-	var buckets = make(map[string][]prompb.Sample) // map<metric_rowkey>[]prompb.Sample
-	var metaBuckets = make(map[string][]string)    // map<meta_rowkey>labelsString
+
+	var (
+		rks      []string
+		muts     []*bigtable.Mutation
+		metaMuts = make(map[string]*bigtable.Mutation) // map<meta_rowkey>labelsString
+
+		h128 = murmur3.New128() // labelsString hasher
+		buf  bytes.Buffer       // buf will be reused to construct row key.
+	)
+
 	for i := range req.Timeseries {
 		s.metrics.IncPutSampleCount(len(req.Timeseries[i].Samples))
 		// metrics
@@ -220,84 +251,88 @@ func (s *Store) Put(ctx context.Context, req *prompb.WriteRequest) error {
 			return err
 		}
 
-		var baseBucket = make(map[int64][]prompb.Sample)
-		for k := range ts.Samples {
-			base := ts.Samples[k].Timestamp / DefaultBucketSizeMilliSeconds
-			baseBucket[base] = append(baseBucket[base], ts.Samples[k])
-		}
-
 		var (
-			rkPrefix = name + "#" + labelsString
-			h128     = murmur3.New128()
-
-			buf bytes.Buffer
+			baseMutations = make(map[int64]*bigtable.Mutation)
+			hashedLabels  []byte
 		)
+
 		if s.hashLabels {
 			h128.Reset()
-			h128.Write([]byte(rkPrefix))
-			rkPrefix = string(h128.Sum(nil))
+			h128.Write([]byte(labelsString))
+			hashedLabels = h128.Sum(nil)
 		} else {
-			rkPrefix = rkPrefix + "#"
+			// rkPrefix = rkPrefix + "#"
 		}
 
-		for base, samples := range baseBucket {
+		for k := range ts.Samples {
+			var (
+				col    = make([]byte, colLen)
+				base   = ts.Samples[k].Timestamp / DefaultBucketSizeMilliSeconds
+				offset = int32(ts.Samples[k].Timestamp - base*DefaultBucketSizeMilliSeconds)
+			)
+			// check if base is already there.
+			if _, ok := baseMutations[base]; !ok {
+				// not yet,
+				baseMutations[base] = bigtable.NewMutation()
+			}
+			copy(col[:4], Int32ToBytes(offset))
+			copy(col[4:], Float64ToBytes(ts.Samples[k].Value))
+			// metric value (64 bits) will be stored as part of the column qualifier.
+			// col: <timestamp
+			baseMutations[base].Set(
+				metricFamily,
+				string(col), // column
+				bigtable.Timestamp(ts.Samples[k].Timestamp*1e3),
+				nil,
+			)
+		}
+
+		// construct row keys
+		var (
+			t = bigtable.Now()
+		)
+		for base, mut := range baseMutations {
 			buf.Reset()
 			// metrics
-			buf.WriteString(rkPrefix)
+			buf.WriteString(name)
+			buf.WriteRune('#')
 			buf.Write(Int64ToBytes(base))
+			if s.hashLabels {
+				buf.Write(hashedLabels)
+			} else {
+				return errUnImpl
+			}
 			rk := buf.String()
-
-			buckets[rk] = append(buckets[rk], samples...)
+			rks = append(rks, rk)
+			muts = append(muts, mut)
 
 			// check if meta is already written, caching is use metrics rowkey
 			if _, ok := s.metaWriteCache.LoadOrStore(rk, time.Now()); !ok {
 				// meta
+				// meta row key will be: <name>#<base>
 				buf.Reset()
 				buf.WriteString(name)
 				buf.WriteRune('#')
 				buf.Write(Int64ToBytes(base))
 				metaRK := buf.String()
-
-				metaBuckets[metaRK] = append(metaBuckets[metaRK], labelsString)
+				if _, ok := metaMuts[metaRK]; !ok {
+					metaMuts[metaRK] = bigtable.NewMutation()
+				}
+				metaMuts[metaRK].Set(indexRowLabelFamily, labelsString, t, nil)
 			}
 		}
 	}
 
-	// prepare the metrics
-	var (
-		rks  = make([]string, len(buckets))
-		muts = make([]*bigtable.Mutation, len(buckets))
-		k    int
-	)
-	for rk, samples := range buckets {
-		rks[k] = rk
-		mut := bigtable.NewMutation()
-		for i := range samples {
-			mut.Set(
-				metricFamily,
-				TimestampToColumn(samples[i].Timestamp), // column
-				bigtable.Timestamp(samples[i].Timestamp*1e3),
-				Float64ToBytes(samples[i].Value), // value
-			)
-		}
-		muts[k] = mut
-		k++
-	}
-
 	// prepare the meta
 	var (
-		irks   = make([]string, len(metaBuckets))
-		irmuts = make([]*bigtable.Mutation, len(metaBuckets))
-		ts     = bigtable.Now()
-		i      int
+		irks   = make([]string, len(metaMuts))
+		irmuts = make([]*bigtable.Mutation, len(metaMuts))
+
+		i int
 	)
 
-	for rk, labelsStrings := range metaBuckets {
+	for rk, mut := range metaMuts {
 		irks[i] = rk
-		mut := bigtable.NewMutation()
-		for j := range labelsStrings {
-			mut.Set(indexRowLabelFamily, labelsStrings[j], ts, nil)
-		}
 		irmuts[i] = mut
 		i++
 	}
@@ -372,33 +407,25 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 	s.metrics.IncQuerySeriesRangesCount(len(srs))
 
 	var (
-		name                  = srs[0].Name
-		rrl                   = make(bigtable.RowRangeList, len(srs))
-		seriesRangeBucket     = make(map[string][]prompb.Label) // map<labelsString>[]prompb.Label
-		sampleLabelsStrings   []string
-		sampleBuckets         = make(map[string][]prompb.Sample)
-		expectedNamePrefixLen = len(name) + 1
-		expectedMinRowKeyLen  = len(name) + 1 + 1 + 8 // 2x'#' + 8 bytes base
+		name                = srs[0].Name
+		rrl                 = make([]*btpb.RowRange, len(srs))
+		seriesRangeBucket   = make(map[string][]prompb.Label) // map<labelsString>[]prompb.Label
+		sampleLabelsStrings []string
+		sampleBuckets       = make(map[string][]prompb.Sample)
 
-		buf  bytes.Buffer
+		// buf  bytes.Buffer
 		h128 = murmur3.New128()
 	)
+	// convert SeriesRange to bt.RowRange
 	for i := range srs {
-		buf.Reset()
-
-		buf.WriteString(srs[i].Name)
-		buf.WriteRune('#')
-		buf.WriteString(srs[i].LabelsString)
 		if s.hashLabels {
 			h128.Reset()
-			h128.Write(buf.Bytes())
-			rkP := string(h128.Sum(nil))
-			rrl[i] = NewMetricRowRange(rkP, srs[i].BaseStart, srs[i].BaseEnd)
-			seriesRangeBucket[rkP] = srs[i].Labels
+			h128.Write([]byte(srs[i].LabelsString))
+			hashedLabels := string(h128.Sum(nil))
+			seriesRangeBucket[hashedLabels] = srs[i].Labels
+			rrl[i] = NewMetricRowRange(srs[i].Name, hashedLabels, srs[i].BaseStart, srs[i].BaseEnd)
 		} else {
-			buf.WriteRune('#')
-			rrl[i] = NewMetricRowRange(buf.String(), srs[i].BaseStart, srs[i].BaseEnd)
-			seriesRangeBucket[srs[i].LabelsString] = srs[i].Labels
+			return nil, errUnImpl
 		}
 	}
 
@@ -406,11 +433,7 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 		bigtable.FamilyFilter(metricFamily),
 	}
 
-	filters = append(filters, bigtable.LatestNFilter(1))
-
-	if tf := QueryToBigtableTimeFilter(q.StartTimestampMs, q.EndTimestampMs); tf != nil {
-		filters = append(filters, tf)
-	}
+	filters = append(filters, bigtable.LatestNFilter(1), bigtable.StripValueFilter())
 
 	var (
 		readErr  error
@@ -419,42 +442,40 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 	if s.hashLabels {
 		readFunc = func(r bigtable.Row) bool {
 			s.metrics.IncQueryMetricRowReadCount(1)
-			// rowkey: hash(<metric_name>#<labelsString>)base
-			//         -> 16 bytes                       ->8 bytes
-			rk := r.Key()
-			if len(rk) != hashedMetricRowkeyLen {
-				readErr = errors.New("invalid hashed metric row key read: '" + rk + "'")
+			// rowkey: <metric_name>#<base>hash(<labelsString>)
+			//                     -> 8 bytes     ->16 bytes
+			rk := []byte(r.Key())
+			if len(rk) <= hashedMetricRowKeyPrefixLen {
+				readErr = errors.New("invalid hashed metric row key read: '" + r.Key() + "'")
 				return false
 			}
-			ss := BtRowToPromSamples(r)
-			hashedRkPrefix := rk[:16]
-			if _, ok := sampleBuckets[hashedRkPrefix]; !ok {
-				// maintain order samples order
-				sampleLabelsStrings = append(sampleLabelsStrings, hashedRkPrefix)
+			hashedLabelsString := string(rk[len(rk)-16:])
+			// filter the hashed labels string is in the query
+			if _, ok := seriesRangeBucket[hashedLabelsString]; !ok {
+				return true
 			}
-			sampleBuckets[hashedRkPrefix] = append(sampleBuckets[hashedRkPrefix], ss...)
+
+			base := Int64FromBytes(rk[len(rk)-8-16 : len(rk)-16]) // [<name>#:<name>#<base>]
+			ss := BtRowToPromSamples(base, r, q.StartTimestampMs, q.EndTimestampMs)
+
+			if _, ok := sampleBuckets[hashedLabelsString]; !ok {
+				// maintain order samples order
+				if len(ss) != 0 {
+					sampleLabelsStrings = append(sampleLabelsStrings, hashedLabelsString)
+				}
+			}
+			sampleBuckets[hashedLabelsString] = append(sampleBuckets[hashedLabelsString], ss...)
 			return true
 		}
 	} else {
-		readFunc = func(r bigtable.Row) bool {
-			s.metrics.IncQueryMetricRowReadCount(1)
-			ss := BtRowToPromSamples(r)
-			// rowkey: <metric_name>#<labelsString>#base
-			rk := r.Key()
-			if len(rk) < expectedMinRowKeyLen {
-				readErr = errors.New("invalid metric row key read: '" + rk + "'")
-				return false
-			}
-			labelsString := rk[expectedNamePrefixLen : len(rk)-9]
-			if _, ok := sampleBuckets[labelsString]; !ok {
-				// maintain order samples order
-				sampleLabelsStrings = append(sampleLabelsStrings, labelsString)
-			}
-			sampleBuckets[labelsString] = append(sampleBuckets[labelsString], ss...)
-			return true
-		}
+		return nil, errUnImpl
 	}
-	err = s.tbl.ReadRows(ctx, rrl, readFunc, bigtable.RowFilter(
+	// _ = rrl
+	rset := btrowset.RowSet{
+		RowRanges: rrl,
+		// RowRanges: []*btpb.RowRange{{}},
+	}
+	err = s.tbl.ReadRows(ctx, rset, readFunc, bigtable.RowFilter(
 		bigtable.ChainFilters(
 			filters...,
 		),
@@ -468,6 +489,9 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 
 	var res = make([]*prompb.TimeSeries, len(sampleLabelsStrings))
 	for i := range sampleLabelsStrings {
+		if _, ok := seriesRangeBucket[sampleLabelsStrings[i]]; !ok {
+			fmt.Printf("\nlabels string is not found %s\n", sampleLabelsStrings[i])
+		}
 		ts := &prompb.TimeSeries{
 			Labels:  append([]prompb.Label{{Name: MetricNameLabel, Value: name}}, seriesRangeBucket[sampleLabelsStrings[i]]...),
 			Samples: sampleBuckets[sampleLabelsStrings[i]],
@@ -517,33 +541,28 @@ type SeriesRange struct {
 	Labels             []prompb.Label
 }
 
-// Stirng -
-func (s *SeriesRange) Stirng() string {
+// String -
+func (s *SeriesRange) String() string {
 	return fmt.Sprintf(
 		"SeriesRange: [StartMs: %d, EndMs: %d, BaseStart: %x, BaseEnd: %x, Name: %s, LabelsString: %s, Labels: %v",
 		s.StartMs, s.EndMs, s.BaseStart, s.BaseEnd, s.Name, s.LabelsString, s.Labels,
 	)
 }
 
-// NewMetricRowRange -
-// for hashed rowkey, rkPrefix will be: hash(name#labelsString) // the lenght is 128bits/16bytes, which is predicatable.
-// for none hashed rowkey, it will be name#labelsString#
-func NewMetricRowRange(rkPrefix string, baseStart, baseEnd string) bigtable.RowRange {
-	if baseStart == "" && baseEnd == "" {
-		rr := bigtable.PrefixRange(rkPrefix)
-		return rr
+// NewMetricRowRange - generate bigtable.RowRange
+func NewMetricRowRange(name, hashedLabelsString, baseStart, baseEnd string) *btpb.RowRange {
+	var res = new(btpb.RowRange)
+	if baseStart == "" {
+		baseStart = zeroBaseStart
 	}
-	var (
-		begin, end string
-	)
-	begin = rkPrefix + baseStart
 	if baseEnd == "" {
-		end = prefixSuccessor(rkPrefix)
-	} else {
-		end = rkPrefix + prefixSuccessor(baseEnd)
+		baseEnd = maxBaseEnd
 	}
-	rr := bigtable.NewRange(begin, end)
-	return rr
+
+	res.StartKey = btrowset.RowKey([]byte(name + "#" + baseStart + hashedLabelsString)).KeyRangeStartClosed()
+	res.EndKey = btrowset.RowKey([]byte(name + "#" + baseEnd + hashedLabelsString)).KeyRangeEndClosed()
+
+	return res
 }
 
 type metaRowBaseWithColumn struct {
@@ -576,7 +595,10 @@ func (s *Store) QueryMetaRows(ctx context.Context, q *prompb.Query) ([]SeriesRan
 
 		rkPrefixLen = len(name + "#")
 		rkLen       = rkPrefixLen + 8 // + uint64
-
+		rs          = btrowset.RowSet{
+			RowRanges: []*btpb.RowRange{rr},
+			// RowRanges: []*btpb.RowRange{{}},
+		}
 		metaRows []metaRowBaseWithColumn
 
 		filters = []bigtable.Filter{
@@ -585,7 +607,7 @@ func (s *Store) QueryMetaRows(ctx context.Context, q *prompb.Query) ([]SeriesRan
 			bigtable.StripValueFilter(),
 		}
 	)
-	err = s.mtbl.ReadRows(ctx, rr, func(r bigtable.Row) bool {
+	err = s.mtbl.ReadRows(ctx, rs, func(r bigtable.Row) bool {
 		rk := r.Key()
 		if len(rk) != rkLen {
 			readErr = errors.New("invalid rowkey length '" + rk + "'")
@@ -673,23 +695,29 @@ func (s *Store) QueryMetaRows(ctx context.Context, q *prompb.Query) ([]SeriesRan
 	return res, nil
 }
 
+// // DropMetricsOption -
+// type DropMetricsOption struct {
+// 	Before time.Time
+// }
+
+// // DropMetrics -
+// func (s *Store) DropMetrics(ctx context.Context, opt DropMetricsOption) error {
+// 	if opt.Before.IsZero() {
+// 		return errors.New("drop metrics before is required")
+// 	}
+
+// }
+
 // QueryToBigtableMetaRowRange -
-func QueryToBigtableMetaRowRange(name string, startTs, endTs int64) (bigtable.RowSet, error) {
+func QueryToBigtableMetaRowRange(name string, startTs, endTs int64) (*btpb.RowRange, error) {
 	prefix := name + "#"
-	if startTs == 0 && endTs == 0 {
-		return bigtable.PrefixRange(prefix), nil
-	}
-	var (
-		begin, end string
-	)
-	// build <metric_name>#<base_start> ...
-	begin = prefix + string(Int64ToBytes(startTs/DefaultBucketSizeMilliSeconds))
 	if endTs == 0 {
-		end = prefixSuccessor(prefix)
-	} else {
-		end = prefix + string(Int64ToBytes(endTs/DefaultBucketSizeMilliSeconds+1))
+		endTs = math.MaxInt64
 	}
-	return bigtable.NewRange(begin, end), nil
+	var res = new(btpb.RowRange)
+	res.StartKey = btrowset.NewRowKey([]byte(prefix + string(Int64ToBytes(startTs/DefaultBucketSizeMilliSeconds)))).KeyRangeStartClosed()
+	res.EndKey = btrowset.NewRowKey([]byte(prefix + string(Int64ToBytes(endTs/DefaultBucketSizeMilliSeconds)))).KeyRangeEndClosed()
+	return res, nil
 }
 
 func (s *Store) createTableIfNotExist(ctx context.Context, table string) error {
@@ -736,15 +764,30 @@ func TimestampToColumn(ts int64) string {
 }
 
 // BtRowToPromSamples -
-func BtRowToPromSamples(r bigtable.Row) []prompb.Sample {
-	var samples = make([]prompb.Sample, len(r[metricFamily]))
-
+func BtRowToPromSamples(base int64, r bigtable.Row, startTs, endTs int64) []prompb.Sample {
+	// var samples = make([]prompb.Sample, len(r[metricFamily]))
+	var samples []prompb.Sample
+	if endTs == 0 {
+		endTs = math.MaxInt64
+	}
 	// fill out samples
-	for i, v := range r[metricFamily] {
-		samples[i] = prompb.Sample{
-			Value:     Float64FromBytes(v.Value),
-			Timestamp: int64(v.Timestamp) / 1000,
+	for _, v := range r[metricFamily] {
+		// make sure column is valid.
+		if len(v.Column) != fullColLen {
+			// panic(fmt.Errorf("column invalid %X", v.Column))
+			continue // TODO: log
 		}
+		colBytes := []byte(v.Column)
+		remainder := Int32FromBytes(colBytes[metricFamilyPrefixLen : metricFamilyPrefixLen+4])
+		ts := base*DefaultBucketSizeMilliSeconds + int64(remainder)
+		if ts < startTs || ts > endTs {
+			continue
+		}
+		value := Float64FromBytes(colBytes[metricFamilyPrefixLen+4:])
+		samples = append(samples, prompb.Sample{
+			Value:     value,
+			Timestamp: ts,
+		})
 	}
 	// have to sort due to column is uvarint now... sort order is not maintained.
 	sort.Slice(samples, func(i, j int) bool {
@@ -752,11 +795,6 @@ func BtRowToPromSamples(r bigtable.Row) []prompb.Sample {
 	})
 	return samples
 }
-
-// HashLabelsString -
-// func HashLabelsString(ls string) []byte {
-
-// }
 
 // prefixSuccessor returns the lexically smallest string greater than the
 // prefix, if it exists, or "" otherwise.  In either case, it is the string
