@@ -24,7 +24,7 @@ func TestBigtable_Put(t *testing.T) {
 		hash bool
 	}{
 		{hash: true},
-		{hash: false},
+		// {hash: false},
 	}
 
 	testFunc := func(test struct {
@@ -34,7 +34,7 @@ func TestBigtable_Put(t *testing.T) {
 		defer s.Close()
 
 		baseDay := int64(5)
-		ts, _ := complexSerices(baseDay, test.hash)
+		ts, _ := complexSerices(baseDay, test.hash, false)
 		var exp = make([]*prompb.TimeSeries, len(ts))
 		for i := range ts {
 			exp[i] = &ts[i]
@@ -69,13 +69,129 @@ func TestBigtable_Put(t *testing.T) {
 	}
 }
 
+func TestQueryMetaRows(t *testing.T) {
+	for _, hash := range []bool{true} {
+		s := newBTTestingServer(t, hash)
+		baseDay := int64(17961)
+		ts, tsm := complexSerices(baseDay, hash, false)
+		var exp = make([]*prompb.TimeSeries, len(ts))
+		for i := range ts {
+			exp[i] = &ts[i]
+		}
+		_ = tsm
+
+		err := s.store.Put(context.Background(), &prompb.WriteRequest{
+			Timeseries: ts,
+		})
+		assert.Nil(t, err)
+
+		type expectedFunc func() []promtable.SeriesRange
+
+		tests := []struct {
+			note  string
+			query *prompb.Query
+
+			expected     []promtable.SeriesRange
+			expectedFunc expectedFunc
+			expErr       error
+		}{
+			{
+				note: "all",
+				query: &prompb.Query{
+					Matchers: []*prompb.LabelMatcher{
+						{Type: prompb.LabelMatcher_EQ, Name: promtable.MetricNameLabel, Value: ts[0].Labels[0].Value},
+					},
+				},
+				expected: []promtable.SeriesRange{
+					{
+						StartMs:      0,
+						EndMs:        0,
+						BaseStart:    string(promtable.Int64ToBytes(((baseDay+1)*24*60*60*1000 + 1) / promtable.DefaultBucketSizeMilliSeconds)),
+						BaseEnd:      string(promtable.Int64ToBytes(((baseDay+3)*24*60*60*1000 + 5) / promtable.DefaultBucketSizeMilliSeconds)),
+						Name:         "ma",
+						LabelsString: "kubernetes_pod_name,l1,l2,l3,l4,5bbzk,v1,v2,v3,v4%2c%234",
+						Labels: []prompb.Label{
+							{
+								Name:  "kubernetes_pod_name",
+								Value: "5bbzk",
+							},
+							{
+								Name:  "l1",
+								Value: "v1",
+							},
+							{
+								Name:  "l2",
+								Value: "v2",
+							},
+							{
+								Name:  "l3",
+								Value: "v3",
+							},
+							{
+								Name:  "l4",
+								Value: "v4,#4",
+							},
+						},
+					},
+					{
+						StartMs:      0,
+						EndMs:        0,
+						BaseStart:    string(promtable.Int64ToBytes(((baseDay+1)*24*60*60*1000 + 1) / promtable.DefaultBucketSizeMilliSeconds)),
+						BaseEnd:      string(promtable.Int64ToBytes(((baseDay+3)*24*60*60*1000 + 5) / promtable.DefaultBucketSizeMilliSeconds)),
+						Name:         "ma",
+						LabelsString: "kubernetes_pod_name,l1,l2,l3,l4,nc69q,v1,v2,v3,v4%2c%234",
+						Labels: []prompb.Label{
+							{
+								Name:  "kubernetes_pod_name",
+								Value: "nc69q",
+							},
+							{
+								Name:  "l1",
+								Value: "v1",
+							},
+							{
+								Name:  "l2",
+								Value: "v2",
+							},
+							{
+								Name:  "l3",
+								Value: "v3",
+							},
+							{
+								Name:  "l4",
+								Value: "v4,#4",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		for _, test := range tests {
+			res, err := s.store.QueryMetaRows(context.Background(), test.query)
+			if test.expErr != nil {
+				assert.NotNil(t, err)
+			} else {
+				assert.Nil(t, err)
+			}
+			if test.expectedFunc != nil {
+				assert.EqualValues(t, test.expectedFunc(), res)
+			} else {
+				assert.EqualValues(t, test.expected, res)
+			}
+		}
+		s.Close()
+
+	}
+}
+
 // TestQuery mainly tests the timestamp ranges and errors.
 func TestQuery(t *testing.T) {
-	for _, hash := range []bool{true, false} {
+	for _, hash := range []bool{true} {
 		s := newBTTestingServer(t, hash)
 
 		baseDay := int64(17961)
-		ts, tsm := complexSerices(baseDay, hash)
+		ts, tsm := complexSerices(baseDay, hash, true)
 		var exp = make([]*prompb.TimeSeries, len(ts))
 		for i := range ts {
 			exp[i] = &ts[i]
@@ -177,20 +293,79 @@ func TestQuery(t *testing.T) {
 				expErr:   errors.New(""),
 				expected: nil,
 			},
+			{
+				note: "query 1",
+				query: &prompb.Query{
+					StartTimestampMs: (baseDay+1)*24*60*60*1000 + 2,
+					EndTimestampMs:   (baseDay+2)*24*60*60*1000 + 5,
+					Matchers: []*prompb.LabelMatcher{
+						{
+							Type:  prompb.LabelMatcher_EQ,
+							Name:  promtable.MetricNameLabel,
+							Value: "ma",
+						},
+						{
+							Type:  prompb.LabelMatcher_EQ,
+							Name:  "kubernetes_pod_name",
+							Value: "nc69q",
+						},
+					},
+				},
+				expected: []*prompb.TimeSeries{
+					{
+						Labels:  tsm["6"].Labels,
+						Samples: tsm["6"].Samples[1:4],
+					},
+				},
+			},
+			{
+				note: "query 2",
+				query: &prompb.Query{
+					StartTimestampMs: (baseDay+2)*24*60*60*1000 + 2,
+					EndTimestampMs:   (baseDay+3)*24*60*60*1000 + 5,
+					Matchers: []*prompb.LabelMatcher{
+						{
+							Type:  prompb.LabelMatcher_EQ,
+							Name:  promtable.MetricNameLabel,
+							Value: "ma",
+						},
+						{
+							Type:  prompb.LabelMatcher_EQ,
+							Name:  "kubernetes_pod_name",
+							Value: "5bbzk",
+						},
+					},
+				},
+				expected: []*prompb.TimeSeries{
+					{
+						Labels:  tsm["5"].Labels,
+						Samples: tsm["5"].Samples[2:],
+					},
+				},
+			},
 		}
 
 		for _, test := range tests {
-			res, err := s.store.Query(context.Background(), test.query)
-			if test.expErr != nil {
-				assert.NotNil(t, err)
-			} else {
-				assert.Nil(t, err)
-			}
-			if test.expectedFunc != nil {
-				assert.EqualValues(t, test.expectedFunc(), res)
-			} else {
-				assert.EqualValues(t, test.expected, res)
-			}
+			t.Run(test.note, func(t *testing.T) {
+				res, err := s.store.Query(context.Background(), test.query)
+				if test.expErr != nil {
+					assert.NotNil(t, err)
+				} else {
+					assert.Nil(t, err)
+				}
+				var expected []*prompb.TimeSeries
+				if test.expectedFunc != nil {
+					expected = test.expectedFunc()
+					// assert.EqualValues(t, , res)
+				} else {
+					expected = test.expected
+				}
+				sort.Slice(expected, func(i, j int) bool {
+					return hashFunc(*(expected[i]), true) < hashFunc(*(expected[j]), true)
+				})
+				assert.EqualValues(t, expected, res)
+
+			})
 		}
 		s.Close()
 	}
@@ -198,11 +373,11 @@ func TestQuery(t *testing.T) {
 }
 
 func TestBigtable_Read(t *testing.T) {
-	for _, hash := range []bool{true, false} {
+	for _, hash := range []bool{true} {
 		s := newBTTestingServer(t, hash)
 
 		baseDay := int64(5)
-		ts, tsm := complexSerices(baseDay, hash)
+		ts, tsm := complexSerices(baseDay, hash, true)
 		var exp = make([]*prompb.TimeSeries, len(ts))
 		for i := range ts {
 			exp[i] = &ts[i]
@@ -388,9 +563,43 @@ func emulatorClient(ctx context.Context, addr string) (*bigtable.AdminClient, *b
 	return adminClient, client, nil
 }
 
+func hashFunc(ts prompb.TimeSeries, sortByMetricsRowKey bool) string {
+	var (
+		buf        bytes.Buffer
+		h128       = murmur3.New128()
+		smallestTs int64
+	)
+	// find smallest base
+	for _, sp := range ts.Samples {
+		if smallestTs == 0 {
+			smallestTs = sp.GetTimestamp()
+			continue
+		}
+		if sp.GetTimestamp() < smallestTs {
+			smallestTs = sp.GetTimestamp()
+		}
+	}
+	name, labelsString, err := promtable.LabelsToRowKeyComponents(ts.Labels)
+	if err != nil {
+		panic(err)
+	}
+
+	buf.WriteString(name)
+	buf.WriteRune('#')
+	buf.Write(promtable.Int64ToBytes(smallestTs / promtable.DefaultBucketSizeMilliSeconds))
+
+	if sortByMetricsRowKey {
+		h128.Reset()
+		h128.Write([]byte(labelsString))
+		hashedLabels := string(h128.Sum(nil))
+		buf.WriteString(hashedLabels)
+	}
+	return string(buf.String())
+}
+
 // complexSerices -
 // hash will affect the sort order
-func complexSerices(baseDay int64, hash bool) ([]prompb.TimeSeries, map[string]*prompb.TimeSeries) {
+func complexSerices(baseDay int64, hash bool, sortByMetricsRowKey bool) ([]prompb.TimeSeries, map[string]*prompb.TimeSeries) {
 	ts5 := prompb.TimeSeries{
 		Labels: []prompb.Label{
 			{Name: promtable.MetricNameLabel, Value: "ma"},
@@ -438,24 +647,9 @@ func complexSerices(baseDay int64, hash bool) ([]prompb.TimeSeries, map[string]*
 	}
 
 	if hash {
-		var hashFunc = func(ts prompb.TimeSeries) string {
-			var (
-				buf  bytes.Buffer
-				h128 = murmur3.New128()
-			)
-			name, labelsString, err := promtable.LabelsToRowKeyComponents(ts.Labels)
-			if err != nil {
-				panic(err)
-			}
-			buf.WriteString(name)
-			buf.WriteRune('#')
-			buf.WriteString(labelsString)
-			buf.WriteTo(h128)
-			return string(h128.Sum(nil))
-		}
 
 		sort.Slice(tss, func(i, j int) bool {
-			return hashFunc(tss[i]) < hashFunc(tss[j])
+			return hashFunc(tss[i], sortByMetricsRowKey) < hashFunc(tss[j], sortByMetricsRowKey)
 		})
 	}
 
