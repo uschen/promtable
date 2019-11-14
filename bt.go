@@ -32,6 +32,10 @@ const (
 	MetricNameLabel = "__name__"
 	// DefaultTableName -
 	DefaultTableName = "metrics"
+
+	// DefaultLongtermTableName -
+	DefaultLongtermTableName = "metrics"
+
 	// DefaultMetricMetaTableName -
 	DefaultMetricMetaTableName = "metrics_meta"
 	// DefaultBucketSizeHours -
@@ -138,14 +142,12 @@ func NewStore(options ...StoreOptionFunc) (*Store, error) {
 			return nil, errors.New("long term table prefix is required")
 		}
 		if s.ltableName == "" {
-			s.ltableName = s.ltablePrefix + DefaultTableName
+			s.ltableName = s.ltablePrefix + DefaultLongtermTableName
 		}
 		if s.lc == nil {
 			return nil, errors.New("long term bigtable client is required")
 		}
-		if s.lac == nil {
-			return nil, errors.New("long term bigtable admin client is required")
-		}
+
 		s.ltbl = s.c.Open(s.ltableName)
 	}
 
@@ -254,6 +256,10 @@ func StoreWithEnableMetrics(enabled bool) StoreOptionFunc {
 func (s *Store) EnsureTables(ctx context.Context) error {
 	if s.adminClient == nil {
 		return errors.New("EnsureTables requires adminClient")
+	}
+
+	if s.enableLongterm && s.lac == nil {
+		return errors.New("EnsureTables requires long term adminClient")
 	}
 
 	if err := s.createTableIfNotExist(ctx, s.adminClient, s.tableName); err != nil {
