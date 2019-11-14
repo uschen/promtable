@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sort"
 	"testing"
+	"time"
 
 	"cloud.google.com/go/bigtable"
 	"cloud.google.com/go/bigtable/bttest"
@@ -30,7 +31,7 @@ func TestBigtable_Put(t *testing.T) {
 	testFunc := func(test struct {
 		hash bool
 	}) {
-		s := newBTTestingServer(t, test.hash)
+		s := newBTTestingServer(t, test.hash, false, 0)
 		defer s.Close()
 
 		baseDay := int64(5)
@@ -71,7 +72,7 @@ func TestBigtable_Put(t *testing.T) {
 
 func TestQueryMetaRows(t *testing.T) {
 	for _, hash := range []bool{true} {
-		s := newBTTestingServer(t, hash)
+		s := newBTTestingServer(t, hash, false, 0)
 		baseDay := int64(17961)
 		ts, tsm := complexSerices(baseDay, hash, false)
 		var exp = make([]*prompb.TimeSeries, len(ts))
@@ -188,7 +189,7 @@ func TestQueryMetaRows(t *testing.T) {
 // TestQuery mainly tests the timestamp ranges and errors.
 func TestQuery(t *testing.T) {
 	for _, hash := range []bool{true} {
-		s := newBTTestingServer(t, hash)
+		s := newBTTestingServer(t, hash, false, 0)
 
 		baseDay := int64(17961)
 		ts, tsm := complexSerices(baseDay, hash, true)
@@ -369,12 +370,161 @@ func TestQuery(t *testing.T) {
 		}
 		s.Close()
 	}
+}
+
+func TestQuery_Longterm(t *testing.T) {
+	now := time.Now()
+	ts := prompb.TimeSeries{
+		Labels: []prompb.Label{
+			{Name: promtable.MetricNameLabel, Value: "ma"},
+			{Name: "l1", Value: "v1"},
+		},
+		Samples: []prompb.Sample{
+			{Value: 0.6, Timestamp: promtable.TimeMs(now.Add(time.Duration(-4*9*60*1000-promtable.DefaultBucketSizeMilliSeconds) * time.Millisecond))}, // expired more than 1 day old
+			{Value: 0.5, Timestamp: promtable.TimeMs(now.Add(-4 * 9 * time.Minute))},                                                                   // expired
+			{Value: 0.4, Timestamp: promtable.TimeMs(now.Add(-3 * 9 * time.Minute))},                                                                   // expired
+			{Value: 0.3, Timestamp: promtable.TimeMs(now.Add(-2 * 9 * time.Minute))},
+			{Value: 0.2, Timestamp: promtable.TimeMs(now.Add(-1 * 9 * time.Minute))},
+			{Value: 0.1, Timestamp: promtable.TimeMs(now)},
+		},
+	}
+	sort.Slice(ts.Samples, func(i int, j int) bool {
+		return ts.Samples[i].Timestamp < ts.Samples[j].Timestamp
+	})
+	tss := []prompb.TimeSeries{ts}
+	tse := []*prompb.TimeSeries{&ts}
+
+	type expectedFunc func() []*prompb.TimeSeries
+
+	tests := []struct {
+		note         string
+		expired      bool
+		longterm     bool
+		query        *prompb.Query
+		expected     []*prompb.TimeSeries
+		expectedFunc expectedFunc // expectedFunc takes priority
+		expErr       error
+		skip         bool
+	}{
+		{
+			// skip: true,
+			note:     "end expired should return nothing without long term",
+			expired:  true,
+			longterm: false,
+			query: &prompb.Query{
+				StartTimestampMs: promtable.TimeMs(now.Add(-100 * time.Minute)),
+				EndTimestampMs:   promtable.TimeMs(now.Add(-50 * time.Minute)),
+				Matchers: []*prompb.LabelMatcher{
+					{
+						Type:  prompb.LabelMatcher_EQ,
+						Name:  promtable.MetricNameLabel,
+						Value: "ma",
+					},
+					{
+						Type:  prompb.LabelMatcher_EQ,
+						Name:  "l1",
+						Value: "v1",
+					},
+				},
+			},
+		},
+		{
+			note:     "expired with longterm should return all",
+			expired:  true,
+			longterm: true,
+			query: &prompb.Query{
+				StartTimestampMs: promtable.TimeMs(now.Add(time.Duration(-4*9*60*1000-promtable.DefaultBucketSizeMilliSeconds) * time.Millisecond)),
+				EndTimestampMs:   promtable.TimeMs(now),
+				Matchers: []*prompb.LabelMatcher{
+					{
+						Type:  prompb.LabelMatcher_EQ,
+						Name:  promtable.MetricNameLabel,
+						Value: "ma",
+					},
+					{
+						Type:  prompb.LabelMatcher_EQ,
+						Name:  "l1",
+						Value: "v1",
+					},
+				},
+			},
+			expected: tse,
+		},
+		{
+			// skip:     true,
+			note:     "expired without longterm should return partial",
+			expired:  true,
+			longterm: false,
+			query: &prompb.Query{
+				StartTimestampMs: promtable.TimeMs(now.Add(-50 * time.Minute)),
+				EndTimestampMs:   promtable.TimeMs(now),
+				Matchers: []*prompb.LabelMatcher{
+					{
+						Type:  prompb.LabelMatcher_EQ,
+						Name:  promtable.MetricNameLabel,
+						Value: "ma",
+					},
+					{
+						Type:  prompb.LabelMatcher_EQ,
+						Name:  "l1",
+						Value: "v1",
+					},
+				},
+			},
+			expected: []*prompb.TimeSeries{
+				{
+					Labels: []prompb.Label{
+						{Name: promtable.MetricNameLabel, Value: "ma"},
+						{Name: "l1", Value: "v1"},
+					},
+					Samples: ts.Samples[3:],
+				},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		if test.skip {
+			continue
+		}
+		t.Run(test.note, func(t *testing.T) {
+			var d time.Duration
+			if test.expired {
+				d = time.Duration(20 * time.Minute)
+			}
+			s := newBTTestingServer(t, true, test.longterm, d)
+			defer s.Close()
+			err := s.store.Put(context.Background(), &prompb.WriteRequest{
+				Timeseries: tss,
+			})
+
+			assert.Nil(t, err)
+
+			res, err := s.store.Query(context.Background(), test.query)
+			if test.expErr != nil {
+				assert.NotNil(t, err)
+			} else {
+				assert.Nil(t, err)
+			}
+			var expected []*prompb.TimeSeries
+			if test.expectedFunc != nil {
+				expected = test.expectedFunc()
+				// assert.EqualValues(t, , res)
+			} else {
+				expected = test.expected
+			}
+			sort.Slice(expected, func(i, j int) bool {
+				return hashFunc(*(expected[i]), true) < hashFunc(*(expected[j]), true)
+			})
+			assert.EqualValues(t, expected, res)
+		})
+	}
 
 }
 
 func TestBigtable_Read(t *testing.T) {
 	for _, hash := range []bool{true} {
-		s := newBTTestingServer(t, hash)
+		s := newBTTestingServer(t, hash, false, 0)
 
 		baseDay := int64(5)
 		ts, tsm := complexSerices(baseDay, hash, true)
@@ -480,8 +630,9 @@ func TestHash(t *testing.T) {
 }
 
 type btTestingServer struct {
-	ac    *bigtable.AdminClient
-	c     *bigtable.Client
+	ac *bigtable.AdminClient
+	c  *bigtable.Client
+
 	store *promtable.Store
 
 	ctx    context.Context
@@ -498,7 +649,7 @@ func (bts *btTestingServer) Close() {
 	}
 }
 
-func newBTTestingServer(t *testing.T, hash bool) *btTestingServer {
+func newBTTestingServer(t *testing.T, hash bool, enableLongterm bool, expiry time.Duration) *btTestingServer {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	srv, err := bttest.NewServer("127.0.0.1:0")
@@ -520,12 +671,25 @@ func newBTTestingServer(t *testing.T, hash bool) *btTestingServer {
 		cancel: cancel,
 	}
 
-	store, err := promtable.NewStore(
+	opts := []promtable.StoreOptionFunc{
 		promtable.StoreWithBigtableAdminClient(ac),
 		promtable.StoreWithBigtableClient(c),
 		promtable.StoreWithTableNamePrefix("testing"),
 		promtable.StoreWithHashLabels(hash),
-	)
+		promtable.StoreWithMetricExpiration(expiry),
+	}
+
+	if enableLongterm {
+		opts = append(
+			opts,
+			promtable.StoreWithEnableLongtermStorage(enableLongterm),
+			promtable.StoreWithLongtermBigtableAdminClient(ac),
+			promtable.StoreWithLongermBigtableClient(c),
+			promtable.StoreWithLongtermTableNamePrefix("lt"),
+		)
+	}
+
+	store, err := promtable.NewStore(opts...)
 	if err != nil {
 		t.Error(err)
 		t.FailNow()

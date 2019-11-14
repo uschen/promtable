@@ -38,10 +38,12 @@ const (
 	DefaultBucketSizeHours int64 = 24 // 24 hours
 
 	// DefaultBucketSizeMilliSeconds - 24 hours.
-	DefaultBucketSizeMilliSeconds int64 = 24 * 60 * 60 * 1000
+	DefaultBucketSizeMilliSeconds int64 = 60 * 60 * 1000 // 1hr
 
-	hashedMetricRowKeyPrefixLen = 1 + 8 + 16                      // `#`, `Int64`, `128bits`
-	minHashedMetricRowkeyLen    = hashedMetricRowKeyPrefixLen + 8 // 8bytes base
+	// DefaultBucketSizeMilliSeconds int64 = 24 * 60 * 60 * 1000
+
+	hashedMetricRowKeySuffixLen = 1 + 8 + 16                      // `#` + `128bits` + `Int64`
+	minHashedMetricRowkeyLen    = hashedMetricRowKeySuffixLen + 1 //
 
 	colLen     = 4 + 8                          // 4 bytes for offset + 8 bytes for float64
 	fullColLen = metricFamilyPrefixLen + colLen // 2 + 4 + 8
@@ -65,6 +67,8 @@ type Store struct {
 	tableName     string
 	metaTableName string
 
+	metricExpiration time.Duration
+
 	tbl  *bigtable.Table
 	mtbl *bigtable.Table
 
@@ -79,6 +83,14 @@ type Store struct {
 	metrics *StoreMetrics
 
 	logger *zap.Logger
+
+	// long term storage bigtable
+	enableLongterm bool
+	lc             *bigtable.Client
+	lac            *bigtable.AdminClient
+	ltablePrefix   string
+	ltableName     string
+	ltbl           *bigtable.Table
 }
 
 // StoreOptionFunc -
@@ -120,6 +132,23 @@ func NewStore(options ...StoreOptionFunc) (*Store, error) {
 	s.tbl = s.c.Open(s.tableName)
 	s.mtbl = s.c.Open(s.metaTableName)
 
+	// long term
+	if s.enableLongterm {
+		if s.ltablePrefix == "" {
+			return nil, errors.New("long term table prefix is required")
+		}
+		if s.ltableName == "" {
+			s.ltableName = s.ltablePrefix + DefaultTableName
+		}
+		if s.lc == nil {
+			return nil, errors.New("long term bigtable client is required")
+		}
+		if s.lac == nil {
+			return nil, errors.New("long term bigtable admin client is required")
+		}
+		s.ltbl = s.c.Open(s.ltableName)
+	}
+
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
 	go s.RunMetaCacheGC()
@@ -141,10 +170,26 @@ func StoreWithLogger(l *zap.Logger) StoreOptionFunc {
 	}
 }
 
+// StoreWithEnableLongtermStorage -
+func StoreWithEnableLongtermStorage(enabled bool) StoreOptionFunc {
+	return func(s *Store) error {
+		s.enableLongterm = enabled
+		return nil
+	}
+}
+
 // StoreWithTableNamePrefix -
 func StoreWithTableNamePrefix(prefix string) StoreOptionFunc {
 	return func(s *Store) error {
 		s.tablePrefix = prefix
+		return nil
+	}
+}
+
+// StoreWithLongtermTableNamePrefix -
+func StoreWithLongtermTableNamePrefix(prefix string) StoreOptionFunc {
+	return func(s *Store) error {
+		s.ltablePrefix = prefix
 		return nil
 	}
 }
@@ -157,10 +202,34 @@ func StoreWithBigtableClient(c *bigtable.Client) StoreOptionFunc {
 	}
 }
 
+// StoreWithLongermBigtableClient -
+func StoreWithLongermBigtableClient(c *bigtable.Client) StoreOptionFunc {
+	return func(s *Store) error {
+		s.lc = c
+		return nil
+	}
+}
+
 // StoreWithBigtableAdminClient -
 func StoreWithBigtableAdminClient(ac *bigtable.AdminClient) StoreOptionFunc {
 	return func(s *Store) error {
 		s.adminClient = ac
+		return nil
+	}
+}
+
+// StoreWithLongtermBigtableAdminClient -
+func StoreWithLongtermBigtableAdminClient(ac *bigtable.AdminClient) StoreOptionFunc {
+	return func(s *Store) error {
+		s.lac = ac
+		return nil
+	}
+}
+
+// StoreWithMetricExpiration -
+func StoreWithMetricExpiration(exp time.Duration) StoreOptionFunc {
+	return func(s *Store) error {
+		s.metricExpiration = exp
 		return nil
 	}
 }
@@ -187,26 +256,53 @@ func (s *Store) EnsureTables(ctx context.Context) error {
 		return errors.New("EnsureTables requires adminClient")
 	}
 
-	if err := s.createTableIfNotExist(ctx, s.tableName); err != nil {
+	if err := s.createTableIfNotExist(ctx, s.adminClient, s.tableName); err != nil {
 		return err
+	}
+
+	var (
+		metricPolicy bigtable.GCPolicy
+	)
+
+	if s.metricExpiration == 0 {
+		metricPolicy = bigtable.MaxVersionsPolicy(1)
+	} else {
+		metricPolicy = bigtable.UnionPolicy(
+			bigtable.MaxVersionsPolicy(1),
+			bigtable.MaxAgePolicy(s.metricExpiration),
+		)
 	}
 
 	// create column family
-	if err := s.createColumnFamilyIfNotExist(ctx, s.tableName, metricFamily); err != nil {
+	// metric
+	if err := s.createColumnFamilyIfNotExist(ctx, s.adminClient, s.tableName, metricFamily); err != nil {
 		return err
 	}
-	if err := s.adminClient.SetGCPolicy(ctx, s.tableName, metricFamily, bigtable.MaxVersionsPolicy(1)); err != nil {
+	if err := s.adminClient.SetGCPolicy(ctx, s.tableName, metricFamily, metricPolicy); err != nil {
 		return err
 	}
 
-	if err := s.createTableIfNotExist(ctx, s.metaTableName); err != nil {
+	// meta
+	if err := s.createTableIfNotExist(ctx, s.adminClient, s.metaTableName); err != nil {
 		return err
 	}
-	if err := s.createColumnFamilyIfNotExist(ctx, s.metaTableName, indexRowLabelFamily); err != nil {
+	if err := s.createColumnFamilyIfNotExist(ctx, s.adminClient, s.metaTableName, indexRowLabelFamily); err != nil {
 		return err
 	}
 	if err := s.adminClient.SetGCPolicy(ctx, s.metaTableName, indexRowLabelFamily, bigtable.MaxVersionsPolicy(1)); err != nil {
 		return err
+	}
+
+	if s.enableLongterm {
+		if err := s.createTableIfNotExist(ctx, s.lac, s.ltableName); err != nil {
+			return err
+		}
+		if err := s.createColumnFamilyIfNotExist(ctx, s.lac, s.ltableName, metricFamily); err != nil {
+			return err
+		}
+		if err := s.lac.SetGCPolicy(ctx, s.ltableName, metricFamily, bigtable.MaxVersionsPolicy(1)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -226,6 +322,7 @@ func (s *Store) EnsureTables(ctx context.Context) error {
 // Column Value: nil
 // Column Timestamp: sample timestamp
 //
+// If longterm storage is enabled, Put will write to both storage.
 func (s *Store) Put(ctx context.Context, req *prompb.WriteRequest) error {
 	// write metrics first
 	s.metrics.IncPutTimeseriesCount(len(req.Timeseries))
@@ -296,12 +393,9 @@ func (s *Store) Put(ctx context.Context, req *prompb.WriteRequest) error {
 			// metrics
 			buf.WriteString(name)
 			buf.WriteRune('#')
+			buf.Write(hashedLabels)
 			buf.Write(Int64ToBytes(base))
-			if s.hashLabels {
-				buf.Write(hashedLabels)
-			} else {
-				return errUnImpl
-			}
+
 			rk := buf.String()
 			rks = append(rks, rk)
 			muts = append(muts, mut)
@@ -338,13 +432,20 @@ func (s *Store) Put(ctx context.Context, req *prompb.WriteRequest) error {
 	}
 
 	if len(rks) > 0 {
+		// write metrics
 		if _, err := s.tbl.ApplyBulk(ctx, rks, muts); err != nil {
 			// TODO: deal with partial fail
 			return err
 		}
+		if s.enableLongterm {
+			if _, err := s.ltbl.ApplyBulk(ctx, rks, muts); err != nil {
+				return err
+			}
+		}
 	}
 
 	if len(irks) > 0 {
+		// write meta
 		if _, err := s.mtbl.ApplyBulk(ctx, irks, irmuts); err != nil {
 			return err
 		}
@@ -393,9 +494,30 @@ func (s *Store) Read(ctx context.Context, req *prompb.ReadRequest) (*prompb.Read
 // Query performs read metrics against single prompb.Query
 // It will first query the meta table to find out exactly which metric rows (ranges) are needed
 // to fetch.
+//
+// If metricExpiry is enabled, the query's timestamp range will be truncated.
+// if metricExpiry is enabled and longterm storage is enabled, query will be send to separate places.
 func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSeries, error) {
+	var (
+		qq       *prompb.Query = &(*q)
+		expiryMs int64
+	)
+
+	if s.metricExpiration != 0 {
+		expiryMs = TimeMs(time.Now().Add(-s.metricExpiration))
+		if !s.enableLongterm {
+			// if long term is not enabled
+			// simply truncate the timestamp to the query meta rows
+			if qq.EndTimestampMs < expiryMs { // start is expired
+				return nil, nil
+			}
+			if qq.StartTimestampMs < expiryMs {
+				qq.StartTimestampMs = expiryMs
+			}
+		}
+	}
 	// each SeriesRange represents a unique Timeseries
-	srs, err := s.QueryMetaRows(ctx, q)
+	srs, err := s.QueryMetaRows(ctx, qq)
 	if err != nil {
 		return nil, err
 	}
@@ -408,7 +530,8 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 
 	var (
 		name                = srs[0].Name
-		rrl                 = make([]*btpb.RowRange, len(srs))
+		rrl                 []*btpb.RowRange
+		lrrl                []*btpb.RowRange                  // long term row range if expiration is set and longterm is enabled.
 		seriesRangeBucket   = make(map[string][]prompb.Label) // map<labelsString>[]prompb.Label
 		sampleLabelsStrings []string
 		sampleBuckets       = make(map[string][]prompb.Sample)
@@ -417,16 +540,54 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 		h128 = murmur3.New128()
 	)
 	// convert SeriesRange to bt.RowRange
+	expBase := string(Int64ToBytes(expiryMs / DefaultBucketSizeMilliSeconds))
 	for i := range srs {
-		if s.hashLabels {
-			h128.Reset()
-			h128.Write([]byte(srs[i].LabelsString))
-			hashedLabels := string(h128.Sum(nil))
-			seriesRangeBucket[hashedLabels] = srs[i].Labels
-			rrl[i] = NewMetricRowRange(srs[i].Name, hashedLabels, srs[i].BaseStart, srs[i].BaseEnd)
-		} else {
+		if !s.hashLabels {
 			return nil, errUnImpl
 		}
+
+		h128.Reset()
+		h128.Write([]byte(srs[i].LabelsString))
+		hashedLabels := string(h128.Sum(nil))
+		seriesRangeBucket[hashedLabels] = srs[i].Labels
+
+		if s.metricExpiration == 0 || !s.enableLongterm {
+			// every thing belong to short term
+			rrl = append(
+				rrl,
+				NewMetricRowRange(srs[i].Name, hashedLabels, srs[i].BaseStart, srs[i].BaseEnd),
+			)
+			continue
+		}
+
+		// check if this can go to long term
+		if srs[i].BaseEnd < expBase {
+			// only go to long term
+			lrrl = append(
+				lrrl,
+				NewMetricRowRange(srs[i].Name, hashedLabels, srs[i].BaseStart, srs[i].BaseEnd),
+			)
+			continue
+		}
+
+		if srs[i].BaseStart > expBase {
+			// only goes to shortterm
+			rrl = append(
+				rrl,
+				NewMetricRowRange(srs[i].Name, hashedLabels, srs[i].BaseStart, srs[i].BaseEnd),
+			)
+			continue
+		}
+
+		// split
+		rrl = append(
+			rrl,
+			NewMetricRowRange(srs[i].Name, hashedLabels, expBase, srs[i].BaseEnd),
+		)
+		lrrl = append(
+			lrrl,
+			NewMetricRowRange(srs[i].Name, hashedLabels, srs[i].BaseStart, expBase),
+		)
 	}
 
 	var filters = []bigtable.Filter{
@@ -436,27 +597,28 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 	filters = append(filters, bigtable.LatestNFilter(1), bigtable.StripValueFilter())
 
 	var (
-		readErr  error
-		readFunc func(r bigtable.Row) bool
+		readErr             error
+		readFunc, lreadFunc func(r bigtable.Row) bool
 	)
-	if s.hashLabels {
-		readFunc = func(r bigtable.Row) bool {
+
+	makeReadFunc := func(startTs, endTs int64) func(r bigtable.Row) bool {
+		return func(r bigtable.Row) bool {
 			s.metrics.IncQueryMetricRowReadCount(1)
 			// rowkey: <metric_name>#<base>hash(<labelsString>)
 			//                     -> 8 bytes     ->16 bytes
 			rk := []byte(r.Key())
-			if len(rk) <= hashedMetricRowKeyPrefixLen {
+			if len(rk) < hashedMetricRowKeySuffixLen {
 				readErr = errors.New("invalid hashed metric row key read: '" + r.Key() + "'")
 				return false
 			}
-			hashedLabelsString := string(rk[len(rk)-16:])
+			hashedLabelsString := string(rk[len(rk)-16-8 : len(rk)-8])
 			// filter the hashed labels string is in the query
 			if _, ok := seriesRangeBucket[hashedLabelsString]; !ok {
 				return true
 			}
 
-			base := Int64FromBytes(rk[len(rk)-8-16 : len(rk)-16]) // [<name>#:<name>#<base>]
-			ss := BtRowToPromSamples(base, r, q.StartTimestampMs, q.EndTimestampMs)
+			base := Int64FromBytes(rk[len(rk)-8:]) // [<name>#:<name>#<base>]
+			ss := BtRowToPromSamples(base, r, startTs, endTs)
 
 			if _, ok := sampleBuckets[hashedLabelsString]; !ok {
 				// maintain order samples order
@@ -467,24 +629,59 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 			sampleBuckets[hashedLabelsString] = append(sampleBuckets[hashedLabelsString], ss...)
 			return true
 		}
-	} else {
+	}
+
+	if !s.hashLabels {
 		return nil, errUnImpl
 	}
-	// _ = rrl
-	rset := btrowset.RowSet{
-		RowRanges: rrl,
-		// RowRanges: []*btpb.RowRange{{}},
+
+	if s.metricExpiration == 0 {
+		// no expiration
+		readFunc = makeReadFunc(qq.StartTimestampMs, qq.EndTimestampMs)
+	} else {
+		// with expiration, normal storage caps to expiration
+		readFunc = makeReadFunc(expiryMs, qq.EndTimestampMs)
+
+		if s.enableLongterm {
+			// capped to short term
+			lreadFunc = makeReadFunc(qq.StartTimestampMs, expiryMs) // read one ms less
+		}
 	}
-	err = s.tbl.ReadRows(ctx, rset, readFunc, bigtable.RowFilter(
-		bigtable.ChainFilters(
-			filters...,
-		),
-	))
-	if err != nil {
-		return nil, err
+
+	if s.metricExpiration != 0 && s.enableLongterm && len(lrrl) > 0 {
+		rset := btrowset.RowSet{
+			RowRanges: lrrl,
+		}
+
+		err = s.ltbl.ReadRows(ctx, rset, lreadFunc, bigtable.RowFilter(
+			bigtable.ChainFilters(
+				filters...,
+			),
+		))
+		if err != nil {
+			return nil, err
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
 	}
-	if readErr != nil {
-		return nil, readErr
+
+	if len(rrl) > 0 {
+		rset := btrowset.RowSet{
+			RowRanges: rrl,
+		}
+
+		err = s.tbl.ReadRows(ctx, rset, readFunc, bigtable.RowFilter(
+			bigtable.ChainFilters(
+				filters...,
+			),
+		))
+		if err != nil {
+			return nil, err
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
 	}
 
 	var res = make([]*prompb.TimeSeries, len(sampleLabelsStrings))
@@ -496,6 +693,10 @@ func (s *Store) Query(ctx context.Context, q *prompb.Query) ([]*prompb.TimeSerie
 			Labels:  append([]prompb.Label{{Name: MetricNameLabel, Value: name}}, seriesRangeBucket[sampleLabelsStrings[i]]...),
 			Samples: sampleBuckets[sampleLabelsStrings[i]],
 		}
+		// sort samples
+		// sort.Slice(ts.Samples, func(i int, j int) bool {
+		// 	return ts.Samples[i].Timestamp < ts.Samples[j].Timestamp
+		// })
 		res[i] = ts
 		s.metrics.IncQueryMetricSampleReadCount(len(ts.Samples))
 		// i++
@@ -559,8 +760,12 @@ func NewMetricRowRange(name, hashedLabelsString, baseStart, baseEnd string) *btp
 		baseEnd = maxBaseEnd
 	}
 
-	res.StartKey = btrowset.RowKey([]byte(name + "#" + baseStart + hashedLabelsString)).KeyRangeStartClosed()
-	res.EndKey = btrowset.RowKey([]byte(name + "#" + baseEnd + hashedLabelsString)).KeyRangeEndClosed()
+	res.StartKey = btrowset.RowKey([]byte(name + "#" + hashedLabelsString + baseStart)).KeyRangeStartClosed()
+	if baseStart == baseEnd {
+		res.EndKey = btrowset.RowKey([]byte(name + "#" + hashedLabelsString + prefixSuccessor(baseEnd))).KeyRangeEndClosed()
+	} else {
+		res.EndKey = btrowset.RowKey([]byte(name + "#" + hashedLabelsString + baseEnd)).KeyRangeEndClosed()
+	}
 
 	return res
 }
@@ -720,22 +925,22 @@ func QueryToBigtableMetaRowRange(name string, startTs, endTs int64) (*btpb.RowRa
 	return res, nil
 }
 
-func (s *Store) createTableIfNotExist(ctx context.Context, table string) error {
-	_, err := s.adminClient.TableInfo(ctx, table)
+func (s *Store) createTableIfNotExist(ctx context.Context, adc *bigtable.AdminClient, table string) error {
+	_, err := adc.TableInfo(ctx, table)
 	if err != nil {
 		if grpc.Code(err) != codes.NotFound {
 			return err
 		}
 		// create table.
-		if err2 := s.adminClient.CreateTable(ctx, table); err2 != nil {
+		if err2 := adc.CreateTable(ctx, table); err2 != nil {
 			return err2
 		}
 	}
 	return nil
 }
 
-func (s *Store) createColumnFamilyIfNotExist(ctx context.Context, table string, family string) error {
-	if err := s.adminClient.CreateColumnFamily(ctx, table, family); err != nil {
+func (s *Store) createColumnFamilyIfNotExist(ctx context.Context, adc *bigtable.AdminClient, table string, family string) error {
+	if err := adc.CreateColumnFamily(ctx, table, family); err != nil {
 		if grpc.Code(err) != codes.AlreadyExists {
 			return err
 		}
@@ -767,7 +972,7 @@ func TimestampToColumn(ts int64) string {
 func BtRowToPromSamples(base int64, r bigtable.Row, startTs, endTs int64) []prompb.Sample {
 	// var samples = make([]prompb.Sample, len(r[metricFamily]))
 	var samples []prompb.Sample
-	if endTs == 0 {
+	if endTs <= 0 {
 		endTs = math.MaxInt64
 	}
 	// fill out samples
@@ -812,4 +1017,9 @@ func prefixSuccessor(prefix string) string {
 	ans := []byte(prefix[:n])
 	ans = append(ans, prefix[n]+1)
 	return string(ans)
+}
+
+// TimeMs -
+func TimeMs(tm time.Time) int64 {
+	return tm.UnixNano() / int64(time.Millisecond)
 }
