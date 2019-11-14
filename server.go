@@ -58,20 +58,28 @@ func NewServerWithConfig(cfg *Config) (*Server, error) {
 	}
 	s.Logger = logger
 
-	// bigtable client
-	btcops := []option.ClientOption{}
-	btcops = append(btcops, btcops...)
-	if cfg.Bigtable.Instance == "" {
-		return nil, errors.New("bigtable.instance is required")
+	getBTOpts := func(btcfg BT) ([]option.ClientOption, *bigtable.Client, error) {
+		// bigtable client
+		btcops := []option.ClientOption{}
+		if btcfg.Instance == "" {
+			return nil, nil, errors.New("bigtable.instance is required")
+		}
+		if btcfg.KeyPath != "" {
+			btcops = append(btcops, option.WithServiceAccountFile(btcfg.KeyPath))
+		}
+		btc, err := bigtable.NewClient(
+			context.Background(),
+			btcfg.ProjectID,
+			btcfg.Instance,
+			btcops...)
+		if err != nil {
+			return nil, nil, err
+		}
+		return btcops, btc, nil
 	}
-	if cfg.Bigtable.KeyPath != "" {
-		btcops = append(btcops, option.WithServiceAccountFile(cfg.Bigtable.KeyPath))
-	}
-	btc, err := bigtable.NewClient(
-		context.Background(),
-		cfg.Bigtable.ProjectID,
-		cfg.Bigtable.Instance,
-		btcops...)
+
+	// normal bt
+	btcops, btc, err := getBTOpts(cfg.Bigtable)
 	if err != nil {
 		return nil, err
 	}
@@ -94,6 +102,32 @@ func NewServerWithConfig(cfg *Config) (*Server, error) {
 			return nil, err
 		}
 		storeOps = append(storeOps, StoreWithBigtableAdminClient(btac))
+	}
+
+	if cfg.EnableLongtermStorage {
+		lbtcops, lbtc, err := getBTOpts(cfg.LongtermBigtable)
+		if err != nil {
+			return nil, err
+		}
+
+		storeOps = append(storeOps,
+			StoreWithEnableLongtermStorage(cfg.EnableLongtermStorage),
+			StoreWithLongermBigtableClient(lbtc),
+			StoreWithLongtermTableNamePrefix(cfg.LongtermBigtable.TablePrefix),
+			// StoreWithLong
+		)
+
+		if cfg.EnsureTables {
+			lbtac, err := bigtable.NewAdminClient(
+				context.Background(),
+				cfg.LongtermBigtable.ProjectID,
+				cfg.LongtermBigtable.Instance,
+				lbtcops...)
+			if err != nil {
+				return nil, err
+			}
+			storeOps = append(storeOps, StoreWithBigtableAdminClient(lbtac))
+		}
 	}
 
 	store, err := NewStore(storeOps...)
