@@ -126,7 +126,7 @@ func NewServerWithConfig(cfg *Config) (*Server, error) {
 			if err != nil {
 				return nil, err
 			}
-			storeOps = append(storeOps, StoreWithBigtableAdminClient(lbtac))
+			storeOps = append(storeOps, StoreWithLongtermBigtableAdminClient(lbtac))
 		}
 	}
 
