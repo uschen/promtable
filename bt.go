@@ -148,7 +148,7 @@ func NewStore(options ...StoreOptionFunc) (*Store, error) {
 			return nil, errors.New("long term bigtable client is required")
 		}
 
-		s.ltbl = s.c.Open(s.ltableName)
+		s.ltbl = s.lc.Open(s.ltableName)
 	}
 
 	s.ctx, s.cancel = context.WithCancel(context.Background())
